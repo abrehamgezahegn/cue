@@ -1,0 +1,41 @@
+{
+  "name": "cue-youtube-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --import tsx server/index.ts",
+    "start": "node --import tsx server/index.ts",
+    "build": "node --import tsx scripts/build.ts",
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:browser": "node --import tsx tests/browser.ts",
+    "install:ytdlp": "node --import tsx scripts/install-ytdlp.ts",
+    "qa:preview": "node --import tsx tests/qa/preview.ts",
+    "qa:extension": "node --import tsx tests/qa/extension.ts",
+    "screenshots": "node --import tsx scripts/screenshots.ts",
+    "screenshots:hero": "node --import tsx scripts/screenshot-hero.ts"
+  },
+  "engines": { "node": ">=22" },
+  "license": "MIT",
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.2.6",
+    "fast-xml-parser": "^5.3.2",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "ytdl-core": "^4.11.5"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.30",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "esbuild": "^0.25.12",
+    "playwright": "^1.56.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2"
+  }
+}
