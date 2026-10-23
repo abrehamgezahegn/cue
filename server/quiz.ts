@@ -95,7 +95,9 @@ const ANGLES = [
 // S tier gets its own angles: a general instruction was not enough to make the questions harder.
 const S_ANGLES = [
   'a counterfactual: what breaks if one premise is dropped',
-  'a quantitative consequence of a number the video states',
+  // Handed out blind, this angle made the model invent a figure for a window that had none
+  // ("handles numbers up to 1000 digits" for a passage that says big numbers make it fail).
+  'a quantitative consequence of a number the video states — only if its window states one; otherwise a counterfactual',
   "the strongest objection to the speaker's claim, and what would answer it",
   'a prediction about a case the video never shows',
   'a distinction between two things the video treats as similar',
@@ -126,7 +128,7 @@ export function buildQuizMessages(count: number, context: { segments: Segment[];
 - "boolean": a claim that is either clearly true or clearly false according to the transcript. answerBool is the verdict.
 - "long": an open question that requires explaining or connecting something — why something happens, how two ideas relate, what would follow. rubric lists 2-4 short points a good answer must contain, each one something the speaker actually says in the cited passages — never general knowledge or your own inference; answerText is a model answer of one to three sentences built from those points. Never ask a long question whose answer is a single fact.
 - "short": a question whose answer is at most five words. answerText is the canonical answer; accept lists 2-3 alternative spellings or paraphrases that mean the same thing. The answer must be a specific fact from the video — a name, a number, an example, an action, a cause. It must never restate the question or repeat the question's own premise: "What is the main limitation?" cannot be answered "it has limitations". If the only answer you can find is a restatement, ask a different question that has a concrete answer.
-Every question cites 1-3 segmentIds, and evidence is a verbatim quote of at most 120 characters copied exactly from one of those segments that settles the answer: the sentence stating the fact, or the sentence that contradicts a false claim. The explanation says why the answer is right in one sentence, without referring to segment numbers. A claim is never false just because the sampled transcript does not mention it — the transcript here is a sample of a long video, so silence proves nothing. Mark a boolean false only when the quoted passage contradicts the claim, and true only when it states it. The explanation says why the answer is right in one sentence, without referring to segment numbers. Never ask two questions about the same fact, and never ask the same thing twice in different words. Ask about quantities only when the reasoning matters (why the size is what it is, what follows from it), never as a figure to recall. Never test memorisation: do not ask for the outcome of one specific worked example, for a name or label the video mentions in passing, for a number quoted once, or for anything answerable by repeating a sentence. Ask about the idea, not the illustration of it. Never about trivia such as the speaker's clothing, and never about what the video does not say. No markdown. Video title for context only: ${title || 'unknown'}. Transcript coverage: ${context.coverage}.` },
+Every question cites 1-3 segmentIds, and evidence is a verbatim quote of at most 120 characters copied exactly from one of those segments that settles the answer: the sentence stating the fact, or the sentence that contradicts a false claim. The explanation says why the answer is right in one sentence, without referring to segment numbers. A claim is never false just because the sampled transcript does not mention it — the transcript here is a sample of a long video, so silence proves nothing. Mark a boolean false only when the quoted passage contradicts the claim, and true only when it states it. The explanation says why the answer is right in one sentence, without referring to segment numbers. Never ask two questions about the same fact, and never ask the same thing twice in different words. Ask about quantities only when the reasoning matters (why the size is what it is, what follows from it), never as a figure to recall. Every number in a correct option, a true claim, a short answer, a model answer or a rubric point must be a number the speaker says in the cited passage — never invent or extrapolate a figure; if the passage gives no number, ask about the idea instead. Never test memorisation: do not ask for the outcome of one specific worked example, for a name or label the video mentions in passing, for a number quoted once, or for anything answerable by repeating a sentence. Ask about the idea, not the illustration of it. Never about trivia such as the speaker's clothing, and never about what the video does not say. No markdown. Video title for context only: ${title || 'unknown'}. Transcript coverage: ${context.coverage}.` },
     { role: 'user', content: `Transcript data:\n${context.segments.map(s => JSON.stringify({ id: s.id, text: s.text })).join('\n')}` },
   ];
 }
@@ -182,10 +184,71 @@ const clean = (value: unknown, max: number) => typeof value === 'string' ? value
 // Quotes are compared without case or punctuation: captions and models disagree on both.
 const normal = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
 
-export function validateQuiz(raw: any, segments: Segment[], model: string, expected: number, level: Level = 'medium'): Quiz {
+const NUMBER_WORDS: Record<string, number> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30,
+  forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100, thousand: 1000, million: 1e6, billion: 1e9, trillion: 1e12,
+};
+const SCALE_WORDS = new Set(['hundred', 'thousand', 'million', 'billion', 'trillion']);
+
+// The figures a piece of text states, as canonical strings: "1,000", "1000" and "thousand(s)" are all "1000".
+// Claims only count digits and scale words — "one example" is not a figure — while a passage counts every
+// number word, because captions spell small numbers out ("five is actually not correct").
+export function figuresIn(text: string, every = false): Set<string> {
+  const found = new Set<string>();
+  for (const match of text.matchAll(/\d[\d,]*(?:\.\d+)?/g)) {
+    const value = Number(match[0].replace(/,/g, ''));
+    if (Number.isFinite(value)) found.add(String(value));
+  }
+  // Runs of number words are read whole too: "forty-five" is 45 and "two hundred" is 200, not just 40 and 5.
+  let total = 0, current = 0, inRun = false;
+  const close = () => { if (inRun && every) found.add(String(total + current)); total = 0; current = 0; inRun = false; };
+  for (const match of text.toLocaleLowerCase().matchAll(/[a-z]+/g)) {
+    const word = match[0].replace(/s$/, '');
+    if (!(word in NUMBER_WORDS)) { if (!(inRun && word === 'and')) close(); continue; }
+    const value = NUMBER_WORDS[word];
+    if (every || SCALE_WORDS.has(word)) found.add(String(value));
+    if (value === 100) current = (current || 1) * 100;
+    else if (value >= 1000) { total += (current || 1) * value; current = 0; }
+    else current += value;
+    inRun = true;
+  }
+  close();
+  return found;
+}
+
+// A figure in the answer that the passage never says was made up. The evidence quote cannot catch this:
+// it proves the topic is there ("if the numbers get really big"), not the number ("up to 1000 digits").
+export function inventsFigure(claim: string, passage: string): string | null {
+  const said = figuresIn(passage, true);
+  return [...figuresIn(claim)].find(figure => !said.has(figure)) ?? null;
+}
+
+// How the auditor reads an answer.
+function answerText(question: QuizQuestion): string {
+  if (question.type === 'choice') return `${question.options?.[question.answer as number] || ''} (options: ${(question.options || []).join(' | ')})`;
+  if (question.type === 'boolean') return question.answer ? 'True: the statement in the question holds' : 'False: the passage contradicts the statement in the question';
+  return String(question.answer);
+}
+
+// What a question asserts as true: the words a learner is told are right.
+function claimOf(question: QuizQuestion): string {
+  if (question.type === 'choice') return question.options?.[question.answer as number] || '';
+  if (question.type === 'boolean') return question.answer === true ? question.prompt : '';
+  return [String(question.answer), ...(question.rubric || [])].join(' ');
+}
+
+export function validateQuiz(raw: any, segments: Segment[], model: string, expected: number, level: Level = 'medium', full: Segment[] = segments): Quiz {
   if (!raw || !Array.isArray(raw.questions)) throw new Error('The model returned an unreadable quiz. Please try again.');
   const byId = new Map(segments.map(s => [s.id, s]));
   const questions: QuizQuestion[] = [];
+  // Checked against the full transcript around the citation, not the sample the generator saw.
+  const keep = (question: QuizQuestion) => {
+    const passage = passageAround(full, question.citations.map(citation => citation.start)) || question.citations.map(citation => citation.text).join(' ');
+    const invented = inventsFigure(claimOf(question), passage);
+    if (invented) { if (process.env.CUE_DEBUG_QUIZ) console.error(`[quiz] dropped invented figure ${invented}: ${question.prompt.slice(0, 80)}`); return; }
+    questions.push(question);
+  };
   const askedWords: Set<string>[] = [];
   for (const item of raw.questions) {
     if (!item || typeof item !== 'object') continue;
@@ -221,20 +284,20 @@ export function validateQuiz(raw: any, segments: Segment[], model: string, expec
       const options = Array.isArray(item.options) ? item.options.map((o: unknown) => clean(o, 160)).filter(Boolean) : [];
       const answer = Number(item.answerIndex);
       if (options.length < 2 || options.length > 6 || !Number.isInteger(answer) || answer < 0 || answer >= options.length) continue;
-      questions.push({ ...base, type, options, answer });
+      keep({ ...base, type, options, answer });
     } else if (type === 'boolean') {
       if (typeof item.answerBool !== 'boolean') continue;
-      questions.push({ ...base, type, answer: item.answerBool });
+      keep({ ...base, type, answer: item.answerBool });
     } else if (type === 'long') {
       const answerText = clean(item.answerText, 600);
       const rubric = Array.isArray(item.rubric) ? item.rubric.map((point: unknown) => clean(point, 160)).filter(Boolean).slice(0, 4) : [];
       if (!answerText || rubric.length < 2) continue;
-      questions.push({ ...base, type, answer: answerText, rubric });
+      keep({ ...base, type, answer: answerText, rubric });
     } else if (type === 'short') {
       const answerText = clean(item.answerText, 120);
       const accept = Array.isArray(item.accept) ? item.accept.map((a: unknown) => clean(a, 120)).filter(Boolean).slice(0, 4) : [];
       if (!answerText || echoesQuestion(prompt, answerText)) continue;
-      questions.push({ ...base, type, answer: answerText, accept });
+      keep({ ...base, type, answer: answerText, accept });
     }
   }
   if (questions.length < Math.min(3, expected)) throw new Error('The model could not write enough grounded questions about this video. Try again.');
@@ -272,14 +335,16 @@ const ints = (values: unknown) => (Array.isArray(values) ? values : []).map(asIn
 // keeps the real point and drops the invented ones. The quote is still required and checked here.
 export async function verifySupport(target: Target, questions: QuizQuestion[], segments: Segment[], signal: AbortSignal, fetcher: typeof fetch = fetch): Promise<SupportAudit> {
   const items = questions.map(question => ({
-    id: question.id, question: question.prompt, answer: String(question.answer),
+    // The answer as words. A choice answer is stored as an index, and an audit shown "answer: 0" passed a
+    // made-up "handles numbers up to 1000 digits" because it never saw what it was approving.
+    id: question.id, question: question.prompt, answer: answerText(question),
     // A synthesis question is settled by its passages together, not by one quote.
     evidence: question.evidence || '',
     passages: passageAround(segments, question.citations.map(citation => citation.start), { max: 1600 }) || question.citations.map(citation => citation.text).join(' ').slice(0, 700),
     ...(question.type === 'long' && question.rubric ? { points: question.rubric.map((point, index) => `${index}: ${point}`) } : {}),
   }));
   const messages = [
-    { role: 'system', content: `You audit quiz questions against the passage they cite. For each item, decide whether a reader could reach the stated answer from the quoted passages. When several passages are given, they count together. Pass the item when the passage states the fact, or when it gives enough to conclude it in the answer's own words; different wording is fine. Fail the item only when the passage is about something else, contradicts the answer, or does not contain the information at all — a passing mention of the topic is not enough. Some items list numbered points an answer is expected to make. Check each point on its own. For a point the passage states or directly supports, add {"id", "point", "quote"} to "points", where quote is copied word for word from that item's passages (at most 120 characters) and says what the point says. Add nothing for a point that is general knowledge, speculation, or something the speaker does not say — a quote that is merely on the same topic does not count. Return JSON matching the schema: the ids that pass in "supported", and the quoted points in "points".` },
+    { role: 'system', content: `You audit quiz questions against the passage they cite. For each item, decide whether a reader could reach the stated answer from the quoted passages. When several passages are given, they count together. Pass the item when the passage states the fact, or when it gives enough to conclude it in the answer's own words; different wording is fine. Fail the item only when the passage is about something else, contradicts the answer, or does not contain the information at all — a passing mention of the topic is not enough. Fail it too when the answer states a number, quantity or limit the passage never says. Some items list numbered points an answer is expected to make. Check each point on its own. For a point the passage states or directly supports, add {"id", "point", "quote"} to "points", where quote is copied word for word from that item's passages (at most 120 characters) and says what the point says. Add nothing for a point that is general knowledge, speculation, or something the speaker does not say — a quote that is merely on the same topic does not count. Return JSON matching the schema: the ids that pass in "supported", and the quoted points in "points".` },
     { role: 'user', content: items.map(item => JSON.stringify(item)).join('\n') },
   ];
   // Thinking is what makes the point check work: without it the model anchors on the points it is shown.
@@ -375,7 +440,7 @@ export async function createQuiz(input: any, target: Target, signal: AbortSignal
       const types = (parsed.questions || []).map((q: any) => `${q.type}(opts:${(q.options || []).length},rubric:${(q.rubric || []).length},ids:${(q.segmentIds || []).length})`);
       console.error('[quiz] raw types', types.join(' '));
     }
-    try { return validateQuiz(parsed, segments, target.model, want, level); }
+    try { return validateQuiz(parsed, segments, target.model, want, level, all); }
     catch (error: any) { if (process.env.CUE_DEBUG_QUIZ) console.error('[quiz] rejected:', error.message); return null; }
   }
   const attempt = () => attemptWith(messages);
