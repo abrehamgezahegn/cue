@@ -72,6 +72,13 @@ export function parseCaptions(raw: string | object): Segment[] {
   return normalizeSegments(rows);
 }
 
+// Total words across all segments. A word is a run of letters or digits.
+export function wordCount(segments: Segment[]): number {
+  let count = 0;
+  for (const segment of segments) count += (segment.text.match(/[\p{L}\p{N}]+/gu) || []).length;
+  return count;
+}
+
 export function formatTime(seconds: number): string {
   const t = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
   const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
