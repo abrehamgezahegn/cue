@@ -90,3 +90,12 @@ export function formatTime(seconds: number): string {
   const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
   return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
 }
+
+// Human-readable duration for reading-time estimates: "3 min", "1 hr 20 min", "<1 min".
+export function formatDuration(minutes: number): string {
+  if (minutes < 1) return '<1 min';
+  const whole = Math.round(minutes);
+  if (whole < 60) return `${whole} min`;
+  const hours = Math.floor(whole / 60), remaining = whole % 60;
+  return remaining ? `${hours} hr ${remaining} min` : `${hours} hr`;
+}
