@@ -7,7 +7,7 @@ import { answerQuestion, coalesceCitations, parseModelJson, selectContext, valid
 import { apiKey } from '../server/config';
 import { requestFailureMessage } from '../src/shared/errors';
 import { buildGradeMessages, shorten, validateGrade } from '../server/grade';
-import { applyAudit, asksForLabel, asksForNumber, figuresIn, inventsFigure, quotesItsSource, validateQuiz, verifySupport } from '../server/quiz';
+import { applyAudit, asksForLabel, asksForNumber, coverageOfVideo, echoesQuestion, figuresIn, inventsFigure, quotesItsSource, typeMix, validateQuiz, verifySupport } from '../server/quiz';
 
 // The passage behind a real fabricated question: no figure for "how big", only that big numbers fail.
 const arithmetic = [
@@ -210,6 +210,40 @@ test('citations inside the same moment collapse into one chip', () => {
   assert.deepEqual(coalesceCitations([cite(120), cite(30), cite(100)]).map(c => c.start), [30, 100, 120]);
   assert.deepEqual(coalesceCitations([cite(0), cite(8), cite(17)]).map(c => c.start), [0, 17], 'just outside the window stays');
   assert.deepEqual(coalesceCitations([]), []);
+});
+
+test('an answer that restates the question tests nothing', () => {
+  // An answer made mostly of the question's own words is dropped, because it tests recall of the prompt, not understanding.
+  assert.equal(echoesQuestion('What is the main limitation of this approach?', 'the main limitation of this approach'), true);
+  assert.equal(echoesQuestion('What is the main limitation of this approach?', 'it overheats under sustained load'), false);
+  // A few shared words are fine — the threshold is 70%.
+  assert.equal(echoesQuestion('Why does the model fail on long inputs?', 'the context window is too small for long inputs'), false, 'shared words under 70% are not echoing');
+  // An empty answer always echoes — there is nothing to mark.
+  assert.equal(echoesQuestion('Any question?', ''), true);
+});
+
+test('a quiz clustered in one quarter covers less of the video', () => {
+  const cite = (start: number) => ({ segmentId: 0, start, text: 't' });
+  const make = (starts: number[]) => ({ questions: starts.map((start, id) => ({ id, type: 'choice' as const, prompt: `q${id}`, answer: 0, options: ['a', 'b'], explanation: 'e', citations: [cite(start)] })), model: 'test' });
+  // Both questions in the first quarter of a 100-second video.
+  assert.equal(coverageOfVideo(make([10, 20]), 100), 0.25);
+  // Questions in the first and third quarters.
+  assert.equal(coverageOfVideo(make([10, 60]), 100), 0.5);
+  // One question in each quarter.
+  assert.equal(coverageOfVideo(make([10, 35, 65, 90]), 100), 1.0);
+  // A video with no duration is treated as fully covered.
+  assert.equal(coverageOfVideo(make([10, 20]), 0), 1);
+});
+
+test('the type mix always includes all four types and sums to the count', () => {
+  for (const count of [4, 6, 8, 10]) {
+    const mix = typeMix(count);
+    assert.equal(mix.choice + mix.boolean + mix.short + mix.long, count, `count ${count} should sum to ${count}`);
+    assert.ok(mix.choice >= 1 && mix.boolean >= 1 && mix.short >= 1 && mix.long >= 1, `count ${count} needs at least one of each type`);
+  }
+  // A larger quiz gets more long questions.
+  assert.ok(typeMix(10).long >= 3, 'ten questions get at least three long ones');
+  assert.ok(typeMix(6).long >= 2, 'six questions get at least two long ones');
 });
 
 test('model output is read even when it is fenced, padded or cut off', () => {
