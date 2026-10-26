@@ -79,6 +79,12 @@ export function wordCount(segments: Segment[]): number {
   return count;
 }
 
+// Reading speed for a transcript is slower than prose: auto-captions are fragmented
+// and the reader is jumping between the video and the text. 160 wpm is a conservative estimate.
+export function readingTimeMinutes(words: number): number {
+  return Math.max(0.1, words / 160);
+}
+
 export function formatTime(seconds: number): string {
   const t = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
   const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
