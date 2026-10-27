@@ -35,7 +35,7 @@ database. Transcripts are cached on your disk, and conversations stay in the bro
 - **Quiz.** Four question types (multiple choice, true or false, a short answer of a few words,
   and a paragraph marked against a rubric) at four difficulties: easy, medium, hard, and S tier.
   Star a question you found interesting and ask for a deeper round on just those passages.
-- **Transcript.** The full transcript, searchable, with every row clickable. Download it as text.
+- **Transcript.** The full transcript, searchable, with every row clickable. Download it as text. The meta line shows the passage count, word count and an estimated reading time.
 - **Return chip.** Every jump you make, from Cue or from YouTube's own scrubber or chapter list,
   leaves a `↩ 6:07` chip that takes you back to where you were.
 - **Focus mode.** Hides recommendations, comments, the masthead, shelves and end screens, leaving
