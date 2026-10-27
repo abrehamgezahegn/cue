@@ -5,7 +5,7 @@ import '@fontsource-variable/geist';
 import './style.css';
 import { api, isExtension, readSaved, save } from './api';
 import { demoTranscript, demoVideo } from './demo';
-import { formatTime, passageAround, videoIdFromUrl } from '../shared/transcript';
+import { formatTime, formatDuration, passageAround, readingTimeMinutes, videoIdFromUrl, wordCount } from '../shared/transcript';
 import type { ChatMessage, Citation, Health, ProviderId, Quiz, QuizQuestion, Transcript, Video } from '../shared/types';
 
 declare const __CUE_BUILT__: string;
@@ -436,7 +436,7 @@ function App() {
         <div ref={chatEnd}/>
       </>}
       {ready && tab === 'transcript' && <>
-        <div className="transcript-tools"><label className="search"><Search size={15}/><input aria-label="Search transcript" value={query} onChange={e => setQuery(e.target.value)} placeholder="Find in transcript…"/>{query && <button aria-label="Clear search" onClick={() => setQuery('')}><X size={14}/></button>}</label><div className="transcript-meta"><span>{query ? `${segments.length} matching passages` : `${transcript!.segments.length} passages`}</span><button onClick={() => video && void loadTranscript(video, tabId)} title="Refresh transcript"><RefreshCw size={12}/>Refresh</button></div></div>
+        <div className="transcript-tools"><label className="search"><Search size={15}/><input aria-label="Search transcript" value={query} onChange={e => setQuery(e.target.value)} placeholder="Find in transcript…"/>{query && <button aria-label="Clear search" onClick={() => setQuery('')}><X size={14}/></button>}</label><div className="transcript-meta"><span>{query ? `${segments.length} matching passages` : `${transcript!.segments.length} passages · ${wordCount(transcript!.segments)} words`}</span><button onClick={() => video && void loadTranscript(video, tabId)} title="Refresh transcript"><RefreshCw size={12}/>Refresh</button></div></div>
         <div className="transcript-list">{segments.map(s => <button key={s.id} className={`transcript-row ${currentSegment?.id === s.id ? 'current' : ''}`} onClick={() => void seek({ segmentId: s.id, start: s.start, text: s.text })}><time>{formatTime(s.start)}</time><span>{s.text}</span></button>)}{segments.length === 0 && <p className="no-results">No passages match "{query}".</p>}</div>
       </>}
       {ready && tab === 'quiz' && <>
