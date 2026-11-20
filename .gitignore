@@ -1,0 +1,9 @@
+.env*
+!.env.example
+.cue-token
+node_modules/
+.cache/
+bin/
+outputs/
+work/
+.DS_Store
