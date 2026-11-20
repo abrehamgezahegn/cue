@@ -8,13 +8,13 @@ Cue is a Chrome side panel plus a small Node service that runs on your machine. 
 a local Ollama model or from DeepInfra, whichever you pick. There is no account and no cloud
 database. Transcripts are cached on your disk, and conversations stay in the browser session.
 
-![Cue next to a three-hour lecture, answering why language models are bad at spelling with six clickable timestamps](docs/screenshots/hero.png)
+![Cue next to a three-hour lecture, answering why language models are bad at spelling with six clickable timestamps](https://cdn.jsdelivr.net/gh/abrehamgezahegn/cue@main/docs/screenshots/hero.png)
 
 <table>
   <tr>
-    <td><img src="docs/screenshots/ask.png" alt="An answer split into two parts, each with its own timestamp chips" width="260"></td>
-    <td><img src="docs/screenshots/quiz.png" alt="A true or false quiz question, marked, with the reason and a link to 0:00" width="260"></td>
-    <td><img src="docs/screenshots/transcript.png" alt="The transcript tab filtered to the passages that mention focus" width="260"></td>
+    <td><img src="https://cdn.jsdelivr.net/gh/abrehamgezahegn/cue@main/docs/screenshots/ask.png" alt="An answer split into two parts, each with its own timestamp chips" width="260"></td>
+    <td><img src="https://cdn.jsdelivr.net/gh/abrehamgezahegn/cue@main/docs/screenshots/quiz.png" alt="A true or false quiz question, marked, with the reason and a link to 0:00" width="260"></td>
+    <td><img src="https://cdn.jsdelivr.net/gh/abrehamgezahegn/cue@main/docs/screenshots/transcript.png" alt="The transcript tab filtered to the passages that mention focus" width="260"></td>
   </tr>
   <tr>
     <td align="center">Ask</td>
