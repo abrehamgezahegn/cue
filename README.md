@@ -138,7 +138,7 @@ You need Node 22 or newer, Chrome 120 or newer, and one of these:
 - A [DeepInfra](https://deepinfra.com) API key.
 
 ```bash
-git clone https://github.com/<you>/cue.git
+git clone https://github.com/abrehamgezahegn/cue.git
 ```
 
 ```bash
