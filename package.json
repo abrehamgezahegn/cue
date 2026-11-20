@@ -18,6 +18,9 @@
   },
   "engines": { "node": ">=22" },
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/abrehamgezahegn/cue.git" },
+  "homepage": "https://github.com/abrehamgezahegn/cue#readme",
+  "bugs": { "url": "https://github.com/abrehamgezahegn/cue/issues" },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.6",
     "fast-xml-parser": "^5.3.2",
