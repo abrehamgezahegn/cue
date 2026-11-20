@@ -7,7 +7,40 @@ import { answerQuestion, coalesceCitations, parseModelJson, selectContext, valid
 import { apiKey } from '../server/config';
 import { requestFailureMessage } from '../src/shared/errors';
 import { buildGradeMessages, shorten, validateGrade } from '../server/grade';
-import { applyAudit, asksForLabel, asksForNumber, quotesItsSource, verifySupport } from '../server/quiz';
+import { applyAudit, asksForLabel, asksForNumber, figuresIn, inventsFigure, quotesItsSource, validateQuiz, verifySupport } from '../server/quiz';
+
+// The passage behind a real fabricated question: no figure for "how big", only that big numbers fail.
+const arithmetic = [
+  { id: 0, start: 6880, duration: 4, text: 'so I said Emily buys 23 apples and 177 oranges and then I just made the numbers a bit bigger' },
+  { id: 1, start: 6884, duration: 4, text: 'and here it gave me five and five is actually not correct' },
+  { id: 2, start: 6950, duration: 4, text: 'especially if the numbers get really big there\'s no guarantee that the model will do this correctly' },
+];
+
+test('figures are read the way captions and models write them', () => {
+  assert.deepEqual([...figuresIn('up to 1,000 digits')], ['1000']);
+  assert.deepEqual([...figuresIn('a thousand digits, one example')], ['1000'], 'scale words count, "one" does not');
+  assert.ok(figuresIn('five is not correct', true).has('5'), 'a passage counts spelled-out numbers');
+  assert.ok(figuresIn('thousands of computers', true).has('1000'));
+  // Captions spell compounds out; a correct "45 minutes" must not read as invented.
+  assert.ok(figuresIn('Forty-five minutes is a useful starting point.', true).has('45'));
+  assert.ok(figuresIn('two hundred and five tokens', true).has('205'));
+  assert.ok(figuresIn('one thousand five hundred', true).has('1500'));
+  assert.equal(inventsFigure('45 minutes', 'Forty-five minutes is a useful starting point.'), null);
+  assert.equal(inventsFigure('The model can handle numbers up to 1000 digits long', arithmetic.map(s => s.text).join(' ')), '1000');
+  assert.equal(inventsFigure('It answered 5, which was wrong', arithmetic.map(s => s.text).join(' ')), null);
+  assert.equal(inventsFigure('Bigger numbers make it fail', 'nothing numeric here'), null);
+});
+
+test('a question whose correct answer invents a figure is dropped', () => {
+  const evidence = "especially if the numbers get really big there's no guarantee";
+  const raw = { questions: [
+    { type: 'choice', prompt: "What quantitative consequence is mentioned regarding the model's ability to handle complex arithmetic problems?", explanation: 'e', segmentIds: [2], evidence, answerIndex: 0, options: ['The model can handle numbers up to 1000 digits long', 'up to 1000 steps', 'up to 1000 operations', 'numbers up to 1000 in size'] },
+    { type: 'boolean', prompt: 'The model reliably does arithmetic on 500-digit numbers in one pass.', explanation: 'e', segmentIds: [2], evidence, answerBool: false },
+    { type: 'short', prompt: 'Why should you ask for code when the arithmetic gets heavy?', explanation: 'e', segmentIds: [2], evidence, answerText: 'no guarantee of correctness', accept: [] },
+  ] };
+  const quiz = validateQuiz(raw, arithmetic, 'm', 2, 'medium', arithmetic);
+  assert.deepEqual(quiz.questions.map(question => question.type), ['boolean', 'short'], 'a false claim may carry a wrong figure; a correct answer may not');
+});
 
 test('parses JSON3 captions with correct millisecond conversion and line joins', () => {
   const rows = parseCaptions(JSON.stringify({ events: [{ tStartMs: 12345, dDurationMs: 2000, segs: [{ utf8: 'A question\n' }, { utf8: 'and answer' }] }, { tStartMs: 0 }] }));
@@ -143,6 +176,12 @@ test('a rubric point survives the audit only with a real, specific quote', async
   assert.deepEqual(audit.points?.get(0), [0, 1, 3], 'invented quote rejected; a reused quote backs only the first point it was given to');
   assert.match(String(sent.messages[1].content), /game the simulation/, 'the audit reads the speech around the citation, not the citation alone');
   assert.equal(sent.chat_template_kwargs.enable_thinking, true);
+
+  // A choice answer is an index; the auditor must see the option it is approving, not "0".
+  const choice: QuizQuestion = { id: 0, type: 'choice', prompt: 'p', answer: 1, options: ['wrong one', 'the right option'], explanation: 'e', citations: question.citations };
+  await verifySupport({ provider: 'deepinfra', model: 'Qwen/Qwen3-32B' }, [choice], segments, AbortSignal.timeout(5000), fetcher);
+  const item = JSON.parse(String(sent.messages[1].content));
+  assert.match(item.answer, /^the right option/);
 });
 
 test('asking for a figure is recall, not comprehension', () => {

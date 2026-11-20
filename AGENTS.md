@@ -137,7 +137,16 @@ client is untrusted (usually too much anonymous traffic), not that the URL is wr
   This call runs with **Qwen thinking on** (`completeJson(..., { think: true })`, own 45s budget): with
   thinking off, Qwen3-32B kept every invented point ("majority opinion rather than individual
   preferences") and dropped the real one ("RL games the reward model"), even when asked for quotes.
-  Top-up questions go through the same audit.
+  Top-up questions go through the same audit. The auditor sees a choice answer as the **option text**
+  (plus the options), never the stored index — it once approved "answer: 0" for a made-up figure.
+- **A figure in a correct answer must be said in the video** (`inventsFigure`, in `validateQuiz`). Every
+  number in a correct option, a true claim, a short/long answer or a rubric point must appear in
+  `passageAround` the citation in the full transcript ("1,000", "1000" and "thousand" match; spelled-out
+  compounds like "forty-five" read whole). This exists because an S-tier quiz marked "the model can
+  handle numbers up to 1000 digits" correct, citing a passage that says big numbers make it fail: the
+  "quantitative consequence" angle was handed to a window with no number, so the model supplied one.
+  That angle now applies only where the window states a number. False claims and distractors may
+  carry wrong figures — that is what makes them wrong.
 - **Every question must quote the passage that settles it.** The generator returns `evidence`, a verbatim
   quote of ≤120 characters, and the server verifies it exists in the cited segment — moving the citation
   to the segment that really contains it, or dropping the question. This exists because a quiz once
