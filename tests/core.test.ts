@@ -1,7 +1,7 @@
 import './env';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatTime, normalizeSegments, parseCaptions, passageAround, videoIdFromUrl } from '../src/shared/transcript';
+import { formatDuration, formatTime, normalizeSegments, parseCaptions, passageAround, readingTimeMinutes, videoIdFromUrl, wordCount } from '../src/shared/transcript';
 import type { QuizQuestion } from '../src/shared/types';
 import { answerQuestion, coalesceCitations, parseModelJson, selectContext, validateAnswer } from '../server/answer';
 import { apiKey } from '../server/config';
@@ -63,6 +63,29 @@ test('only accepts actual YouTube video URLs', () => {
 });
 test('formats long video timestamps and invalid values safely', () => {
   assert.equal(formatTime(3605.9), '1:00:05'); assert.equal(formatTime(65), '1:05'); assert.equal(formatTime(NaN), '0:00');
+});
+
+test('wordCount counts runs of letters and digits across segments', () => {
+  const segs = normalizeSegments([{ start: 0, text: 'Hello world' }, { start: 5, text: 'It costs 25 dollars' }]);
+  assert.equal(wordCount(segs), 6, 'punctuation is not a word, numbers are');
+  assert.equal(wordCount([]), 0);
+  assert.equal(wordCount(normalizeSegments([{ start: 0, text: '   ' }])), 0, 'whitespace only is zero words');
+});
+
+test('readingTimeMinutes is conservative and never returns zero', () => {
+  assert.ok(readingTimeMinutes(0) >= 0.1, 'zero words still rounds up to a minimum');
+  assert.ok(readingTimeMinutes(320) > 1.9 && readingTimeMinutes(320) < 2.1, '320 words ≈ 2 min at 160 wpm');
+  assert.ok(readingTimeMinutes(1600) > 9.9 && readingTimeMinutes(1600) < 10.1, '1600 words ≈ 10 min');
+});
+
+test('formatDuration produces human-readable labels', () => {
+  assert.equal(formatDuration(0), '<1 min');
+  assert.equal(formatDuration(0.5), '<1 min');
+  assert.equal(formatDuration(1), '1 min');
+  assert.equal(formatDuration(3.4), '3 min');
+  assert.equal(formatDuration(60), '1 hr');
+  assert.equal(formatDuration(80), '1 hr 20 min');
+  assert.equal(formatDuration(125), '2 hr 5 min');
 });
 const segments = normalizeSegments([{ start: 134, duration: 20, text: 'Put your phone in another room.' }, { start: 244, text: 'Take a break.' }]);
 test('timestamps and source text come from the transcript, not model values', () => {
