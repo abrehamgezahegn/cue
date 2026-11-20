@@ -1,5 +1,8 @@
 # Cue
 
+[![CI](https://github.com/abrehamgezahegn/cue/actions/workflows/ci.yml/badge.svg)](https://github.com/abrehamgezahegn/cue/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Ask a YouTube video a question and get an answer that cites the moments it came from. Click a
 timestamp and the video jumps there. Cue can also quiz you on what you watched, and every quiz
 question links back to the passage that settles it.
@@ -12,14 +15,16 @@ database. Transcripts are cached on your disk, and conversations stay in the bro
 
 <table>
   <tr>
-    <td><img src="https://cdn.jsdelivr.net/gh/abrehamgezahegn/cue@main/docs/screenshots/ask.png" alt="An answer split into two parts, each with its own timestamp chips" width="260"></td>
-    <td><img src="https://cdn.jsdelivr.net/gh/abrehamgezahegn/cue@main/docs/screenshots/quiz.png" alt="A true or false quiz question, marked, with the reason and a link to 0:00" width="260"></td>
-    <td><img src="https://cdn.jsdelivr.net/gh/abrehamgezahegn/cue@main/docs/screenshots/transcript.png" alt="The transcript tab filtered to the passages that mention focus" width="260"></td>
+    <td><img src="https://cdn.jsdelivr.net/gh/abrehamgezahegn/cue@main/docs/screenshots/ask.png" alt="An answer split into two parts, each with its own timestamp chips" width="200"></td>
+    <td><img src="https://cdn.jsdelivr.net/gh/abrehamgezahegn/cue@main/docs/screenshots/quiz.png" alt="A true or false quiz question, marked, with the reason and a link to 0:00" width="200"></td>
+    <td><img src="https://cdn.jsdelivr.net/gh/abrehamgezahegn/cue@main/docs/screenshots/transcript.png" alt="The transcript tab filtered to the passages that mention focus" width="200"></td>
+    <td><img src="https://cdn.jsdelivr.net/gh/abrehamgezahegn/cue@main/docs/screenshots/ask-dark.png" alt="The dark theme, answering what to do when an unrelated thought shows up, citing 2:56" width="200"></td>
   </tr>
   <tr>
     <td align="center">Ask</td>
     <td align="center">Quiz</td>
     <td align="center">Transcript</td>
+    <td align="center">Dark theme</td>
   </tr>
 </table>
 
