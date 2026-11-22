@@ -39,15 +39,54 @@ export const api = {
   ask: (question: string, transcript: Transcript, history: ChatMessage[], target: Target | null, signal: AbortSignal) =>
     request<Answer>('/api/ask', { question, segments: transcript.segments, history, ...(target ? { provider: target.provider, model: target.model } : {}) }, signal),
 };
+// What someone typed or earned outlives a reload, a closed panel and a browser restart, so it lives in
+// local storage. Session storage was cleared with the browser and took half-written answers with it.
+let carried: Promise<void> | null = null;
+function carryOver() {
+  return carried ??= (async () => {
+    if (!isExtension) return;
+    const old = await chrome.storage.session.get(null);
+    const keys = Object.keys(old);
+    if (!keys.length) return;
+    const existing = await chrome.storage.local.get(keys);
+    const missing = Object.fromEntries(keys.filter(key => existing[key] === undefined).map(key => [key, old[key]]));
+    if (Object.keys(missing).length) await chrome.storage.local.set(missing);
+    await chrome.storage.session.clear();
+  })().catch(() => {});
+}
 export async function readSaved<T>(key: string, fallback: T): Promise<T> {
   try {
-    if (isExtension) return ((await chrome.storage.session.get(key))[key] as T | undefined) ?? fallback;
-    return JSON.parse(sessionStorage.getItem(key) || 'null') ?? fallback;
+    if (isExtension) { await carryOver(); return ((await chrome.storage.local.get(key))[key] as T | undefined) ?? fallback; }
+    return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback;
   } catch { return fallback; }
 }
 export async function save(key: string, value: unknown) {
   try {
-    if (isExtension) await chrome.storage.session.set({ [key]: value });
-    else sessionStorage.setItem(key, JSON.stringify(value));
+    if (isExtension) {
+      await carryOver();
+      if (value == null) await chrome.storage.local.remove(key); else await chrome.storage.local.set({ [key]: value });
+    } else if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(value));
   } catch { /* The current conversation remains usable when storage is full. */ }
+}
+
+// Per-video keys are `<kind>:<videoId>`. The most recently opened videos keep theirs; older ones are
+// dropped so storage cannot grow without bound.
+const keptVideos = 150;
+const videoKinds = ['chat', 'checkpoint', 'quiz', 'draft', 'quiz-drafts', 'view'];
+export async function rememberVideo(videoId: string) {
+  const recent = { ...await readSaved<Record<string, number>>('recent-videos', {}), [videoId]: Date.now() };
+  const ids = Object.keys(recent).sort((a, b) => recent[b] - recent[a]);
+  if (ids.length <= keptVideos) { await save('recent-videos', recent); return; }
+  const kept = new Set(ids.slice(0, keptVideos));
+  await save('recent-videos', Object.fromEntries([...kept].map(id => [id, recent[id]])));
+  try {
+    const all = isExtension ? Object.keys(await chrome.storage.local.get(null)) : Object.keys(localStorage);
+    const stale = all.filter(key => {
+      const cut = key.indexOf(':');
+      return cut > 0 && videoKinds.includes(key.slice(0, cut)) && !kept.has(key.slice(cut + 1));
+    });
+    if (!stale.length) return;
+    if (isExtension) await chrome.storage.local.remove(stale); else stale.forEach(key => localStorage.removeItem(key));
+  } catch { /* Pruning is housekeeping; a failure leaves everything in place. */ }
 }

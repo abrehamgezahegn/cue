@@ -43,6 +43,13 @@ bin/yt-dlp      downloaded binary (36 MB). Gitignored.
   never from model output.
 - **The API key never reaches the browser.** Panels authenticate with the token in `.cue-token`
   (baked in at build time by `vite.config.ts`). The DeepInfra key stays in `.env.local`, server only.
+- **Nothing a person types is ever lost.** The composer draft, quiz answers in progress, the open tab and
+  the transcript search are saved per video as they change (`draft:`, `quiz-drafts:`, `view:` keys) in
+  `chrome.storage.local` (preview: `localStorage`), so a reload, a closed panel or a browser restart keeps
+  them. Session storage was cleared with the browser; it is migrated once and no longer written. Saves for
+  a video wait until its saved state has been read back (`restored` ref), or the empty first paint would
+  overwrite it. A suggestion click must not clear the composer. A question left unanswered (Stop, reload)
+  shows "Ask again". The last 150 videos keep their state (`rememberVideo`).
 - **No marketing copy in the UI.** No taglines, no "Ready to ask", no "Made for the curious".
   Labels either carry information or don't ship.
 - **Never run a model larger than the machine can hold.** This is a 16 GB M2 Pro: keep local

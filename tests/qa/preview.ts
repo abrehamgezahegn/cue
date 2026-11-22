@@ -144,7 +144,8 @@ await check('quiz runs all question types, scores itself and links to the video'
       await first.click();
       seen.add(/^[TF]\s/.test(label) ? 'boolean' : 'choice');
     }
-    await page.locator('.quiz-feedback').waitFor({ timeout: 5000 });
+    // Written answers are marked by a model; a choice answers instantly.
+    await page.locator('.quiz-feedback').waitFor({ timeout: 60000 });
     if (!(await page.locator('.quiz-feedback .time-link').count())) fail('a question with no citation');
     if (step === 0) {
       // the passage around the citation opens inline, highlights the cited lines and its rows are seekable
@@ -183,6 +184,9 @@ await check('dark theme survives a reload', async () => {
   await page.getByLabel('Appearance').selectOption('dark');
   await page.getByRole('button', { name: 'Close settings' }).click();
   await page.reload();
+  // The panel reopens on the tab it was left on — the quiz, here.
+  await page.locator('.tabs .selected', { hasText: 'Quiz' }).waitFor({ timeout: 60000 });
+  await page.getByRole('button', { name: 'Ask', exact: true }).click();
   await page.locator('.composer textarea:not([disabled])').waitFor({ timeout: 60000 });
   const theme = await page.locator('html').getAttribute('data-theme');
   if (theme !== 'dark') fail(`theme after reload: ${theme}`);
@@ -195,6 +199,17 @@ await check('conversation survives a reload', async () => {
   const messages = await page.locator('.assistant-message').count();
   if (messages < 2) fail(`only ${messages} answers after reload`);
   return `${messages} answers restored`;
+});
+
+await check('a half-written question survives a reload', async () => {
+  const text = 'half-written question about the second point';
+  await page.locator('#question').fill(text);
+  await page.reload();
+  await page.locator('.composer textarea:not([disabled])').waitFor({ timeout: 60000 });
+  const restored = await page.locator('#question').inputValue();
+  if (restored !== text) fail(`composer after reload: "${restored}"`);
+  await page.locator('#question').fill('');
+  return 'draft restored';
 });
 
 await check('no horizontal overflow at 320, 390 and 768', async () => {
