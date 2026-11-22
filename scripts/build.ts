@@ -9,7 +9,7 @@ await mkdir('outputs/extension/icons', { recursive: true });
 await writeFile('outputs/extension/manifest.json', JSON.stringify({
   manifest_version: 3, name: 'Cue · YouTube assistant', version: '0.1.0', minimum_chrome_version: '120',
   description: 'Ask the video. Find the moment. Transcript-grounded answers with clickable timestamps.',
-  permissions: ['sidePanel', 'storage', 'activeTab'],
+  permissions: ['sidePanel', 'storage', 'unlimitedStorage', 'activeTab'],
   host_permissions: ['https://www.youtube.com/*', 'https://m.youtube.com/*', 'http://127.0.0.1:4317/*'],
   background: { service_worker: 'background.js' },
   action: { default_title: 'Open Cue', default_icon: { 16: 'icons/16.png', 32: 'icons/32.png', 48: 'icons/48.png', 128: 'icons/128.png' } },

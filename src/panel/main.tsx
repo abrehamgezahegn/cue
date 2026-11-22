@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { ArrowUp, ArrowUpRight, ArrowRight, Check, ChevronDown, Copy, FileText, MessageCircle, Plus, RefreshCw, Search, Settings2, Square, X, Play, Download, LoaderCircle, AlertCircle, Focus, Undo2, ListChecks, ChevronsDown, Check as CheckMark, X as CrossMark, RotateCcw } from 'lucide-react';
 import '@fontsource-variable/geist';
 import './style.css';
-import { api, isExtension, readSaved, save } from './api';
+import { api, isExtension, readSaved, rememberVideo, save } from './api';
 import { demoTranscript, demoVideo } from './demo';
 import { formatTime, formatDuration, passageAround, readingTimeMinutes, videoIdFromUrl, wordCount } from '../shared/transcript';
 import type { ChatMessage, Citation, Health, ProviderId, Quiz, QuizQuestion, Transcript, Video } from '../shared/types';
@@ -73,6 +73,9 @@ function App() {
   const settingsDialog = useRef<HTMLDialogElement>(null);
   const draftBeforeAsk = useRef('');
   const storageKey = useRef('');
+  // The video whose saved drafts have been read back. Until then nothing is written for it, or the
+  // empty state of the first paint would overwrite what the person typed before a reload.
+  const restored = useRef('');
 
   const checkHealth = useCallback(async () => {
     try { setHealth(await api.health()); setConnectionError(''); }
@@ -100,7 +103,21 @@ function App() {
     // before the restore below has read it.
     if (!video || !quiz) return;
     void save(`quiz:${video.id}`, { videoId: video.id, quiz, index: quizIndex, answers: quizAnswers, done: quizDone, marked: quizMarked, clarify: quizClarify });
-  }, [video, quiz, quizIndex, quizAnswers, quizDone, quizMarked, quizClarify]);
+  }, [video?.id, quiz, quizIndex, quizAnswers, quizDone, quizMarked, quizClarify]);
+  // Anything typed is saved as it is typed: a reload, a closed panel or a browser restart keeps it.
+  useEffect(() => {
+    if (!video || restored.current !== video.id) return;
+    void save(`draft:${video.id}`, draft || null);
+  }, [video?.id, draft]);
+  useEffect(() => {
+    if (!video || restored.current !== video.id) return;
+    const kept = Object.fromEntries(Object.entries(quizDrafts).filter(([, text]) => text));
+    void save(`quiz-drafts:${video.id}`, Object.keys(kept).length ? kept : null);
+  }, [video?.id, quizDrafts]);
+  useEffect(() => {
+    if (!video || restored.current !== video.id) return;
+    void save(`view:${video.id}`, { tab, query });
+  }, [video?.id, tab, query]);
   useEffect(() => {
     const latestQuestion = [...document.querySelectorAll('.user-message')].at(-1);
     latestQuestion?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -176,6 +193,7 @@ function App() {
           return;
         }
         current.current = nextKey;
+        restored.current = '';
         answerController.current?.abort(); loadController.current?.abort();
         setBusy(false); setVideo(nextVideo); setTabId(nextTabId); setMessages([]); setDraft(''); setQuery(''); setError(''); setClearConfirm(false); setPlayback(null);
         lastPosition.current = nextVideo ? { t: nextVideo.currentTime, at: Date.now() } : null;
@@ -200,6 +218,18 @@ function App() {
           setQuizMarked(Array.isArray(savedQuiz.marked) ? savedQuiz.marked.filter((value: unknown) => typeof value === 'number') : []);
           setQuizClarify(savedQuiz.clarify && typeof savedQuiz.clarify === 'object' ? savedQuiz.clarify : {});
         }
+        const [savedDraft, savedQuizDrafts, savedView] = await Promise.all([
+          readSaved<string>(`draft:${nextVideo.id}`, ''),
+          readSaved<Record<number, string> | null>(`quiz-drafts:${nextVideo.id}`, null),
+          readSaved<{ tab?: string; query?: string } | null>(`view:${nextVideo.id}`, null),
+        ]);
+        if (closed || current.current !== nextKey) return;
+        if (typeof savedDraft === 'string') setDraft(savedDraft);
+        if (savedQuizDrafts && typeof savedQuizDrafts === 'object') setQuizDrafts(savedQuizDrafts);
+        if (savedView?.tab === 'ask' || savedView?.tab === 'transcript' || savedView?.tab === 'quiz') setTab(savedView.tab);
+        if (typeof savedView?.query === 'string') setQuery(savedView.query);
+        restored.current = nextVideo.id;
+        void rememberVideo(nextVideo.id);
         void loadTranscript(nextVideo, nextTabId);
       } finally { polling = false; }
     }
@@ -209,7 +239,8 @@ function App() {
     return () => { closed = true; clearInterval(interval); answerController.current?.abort(); loadController.current?.abort(); };
   }, [loadTranscript]);
 
-  async function ask(raw = draft, previous = messages) {
+  // Only a question sent from the composer empties it. A suggestion or a retry leaves the draft alone.
+  async function ask(raw: string, previous = messages, fromComposer = false) {
     const question = raw.trim();
     if (!question || busy || !transcript || mode !== 'ready') return;
     const controller = new AbortController(); answerController.current = controller;
@@ -217,7 +248,7 @@ function App() {
     const user: ChatMessage = { id: id(), role: 'user', text: question };
     const next = [...previous, user].slice(-40);
     draftBeforeAsk.current = question;
-    setMessages(next); setDraft(''); setBusy(true); setError(''); setTab('ask');
+    setMessages(next); if (fromComposer) setDraft(''); setBusy(true); setError(''); setTab('ask');
     await save(key, next);
     try {
       const answer = await api.ask(question, transcript, previous, model, controller.signal);
@@ -229,9 +260,11 @@ function App() {
     finally { if (answerController.current === controller) { setBusy(false); input.current?.focus(); } }
   }
   function stop() { answerController.current?.abort(); setBusy(false); setToast('Answer stopped'); }
+  // The unanswered question is the last message: after a reload, a closed panel or Stop, it is all that is left.
   async function retry() {
-    const previous = messages.at(-1)?.role === 'user' ? messages.slice(0, -1) : messages;
-    await ask(draftBeforeAsk.current || messages.at(-1)?.text || draft, previous);
+    const last = messages.at(-1);
+    if (last?.role === 'user') return ask(last.text, messages.slice(0, -1));
+    await ask(draftBeforeAsk.current, messages);
   }
   // The checkpoint is where you were before your own last navigation in the player.
   // Scrub, click the progress bar or pick a chapter: the playhead jumps, the place it left is kept.
@@ -433,6 +466,7 @@ function App() {
         {messages.length === 0 ? <div className="welcome"><div className="suggestions">{['Give me the key takeaways', 'Explain the main idea simply', 'What can I put into practice?'].map(suggestion => <button key={suggestion} onClick={() => void ask(suggestion)}><span>{suggestion}</span><ArrowUpRight size={14}/></button>)}</div></div> : <div className="messages" role="log" aria-label="Conversation">{messages.map(m => m.role === 'user' ? <div className="user-message" key={m.id}>{m.text}</div> : <article className="assistant-message" key={m.id}>{m.answer?.parts.map((p, i) => <div className="answer-part" key={i}><p>{p.text}</p>{p.citations.length > 0 && <div className="citations">{p.citations.map(c => <TimeLink key={c.segmentId} citation={c}/>)}</div>}</div>)}{m.answer?.coverage === 'selected' && <p className="coverage-note">Based on selected passages from this long video.</p>}<div className="answer-actions"><button className="icon-button" title="Copy answer" aria-label="Copy answer" onClick={() => void copy(m)}>{copied === m.id ? <Check size={14}/> : <Copy size={14}/>}</button>{copied === m.id && <span>Copied</span>}</div></article>)}</div>}
         {busy && <div className="thinking" role="status"><Mark small/><span>Finding the right moments</span><span className="thinking-dots">···</span>{busySeconds >= 5 && <span className="thinking-time">{busySeconds}s</span>}</div>}
         {error && !busy && <div className="inline-error" role="alert"><AlertCircle size={16}/><div><p>{error}</p><button onClick={() => void retry()}>Try again <RefreshCw size={12}/></button></div></div>}
+        {!error && !busy && messages.at(-1)?.role === 'user' && <div className="inline-error unanswered" role="status"><div><p>No answer to this question yet.</p><button onClick={() => void retry()}>Ask again <RefreshCw size={12}/></button></div></div>}
         <div ref={chatEnd}/>
       </>}
       {ready && tab === 'transcript' && <>
@@ -538,9 +572,9 @@ function App() {
         </div>}
       </>}
     </main>
-    {video && tab === 'ask' && <footer className="composer-area">{(connectionError || health?.configured === false) && <button className="connection-notice" onClick={() => setSettings(true)}><AlertCircle size={13}/>{health?.configured === false ? 'No model available — start Ollama or add a key' : 'Local service is offline'}<ArrowRight size={13}/></button>}<form className={`composer ${busy ? 'is-busy' : ''}`} onSubmit={e => { e.preventDefault(); void ask(); }}><label className="sr-only" htmlFor="question">Ask about this video</label><textarea id="question" ref={input} rows={2} maxLength={2000} value={draft} disabled={!ready} onChange={e => setDraft(e.target.value)} placeholder={messages.length ? 'Ask a follow-up…' : 'Ask about this video…'} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void ask(); } }}/><div className="composer-bottom">{busy && <span>Reading the transcript</span>}{busy ? <button className="send-button" type="button" onClick={stop} aria-label="Stop answer"><Square size={13} fill="currentColor"/></button> : <button className="send-button" type="submit" disabled={!ready || !draft.trim()} aria-label="Send question"><ArrowUp size={18}/></button>}</div></form></footer>}
+    {video && tab === 'ask' && <footer className="composer-area">{(connectionError || health?.configured === false) && <button className="connection-notice" onClick={() => setSettings(true)}><AlertCircle size={13}/>{health?.configured === false ? 'No model available — start Ollama or add a key' : 'Local service is offline'}<ArrowRight size={13}/></button>}<form className={`composer ${busy ? 'is-busy' : ''}`} onSubmit={e => { e.preventDefault(); void ask(draft, messages, true); }}><label className="sr-only" htmlFor="question">Ask about this video</label><textarea id="question" ref={input} rows={2} maxLength={2000} value={draft} disabled={!ready} onChange={e => setDraft(e.target.value)} placeholder={messages.length ? 'Ask a follow-up…' : 'Ask about this video…'} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void ask(draft, messages, true); } }}/><div className="composer-bottom">{busy && <span>Reading the transcript</span>}{busy ? <button className="send-button" type="button" onClick={stop} aria-label="Stop answer"><Square size={13} fill="currentColor"/></button> : <button className="send-button" type="submit" disabled={!ready || !draft.trim()} aria-label="Send question"><ArrowUp size={18}/></button>}</div></form></footer>}
     <div className={`toast ${toast ? 'visible' : ''}`} role="status">{toast}</div>
-    <dialog ref={settingsDialog} className="settings-dialog" onCancel={() => setSettings(false)} onClick={e => { if (e.target === settingsDialog.current) setSettings(false); }}><div className="settings-inner"><div className="settings-header"><h2>Settings</h2><button className="icon-button" aria-label="Close settings" onClick={() => setSettings(false)}><X size={18}/></button></div><section className="setting-section"><div className="setting-title"><span>Model</span><span className={`connection-status ${health?.configured ? 'connected' : ''}`}>{health?.configured ? 'Connected' : 'Offline'}</span></div><label className="model-row"><span className="sr-only">Model</span><select aria-label="Model" value={modelValue} disabled={!localModels.length && !cloudModels.length} onChange={e => { const raw = e.target.value; const cut = raw.indexOf(':'); updatePreferences({ choice: { provider: raw.slice(0, cut) as ProviderId, model: raw.slice(cut + 1) } }); }}>{localModels.length > 0 && <optgroup label="This computer">{localModels.map(m => <option key={`ollama:${m}`} value={`ollama:${m}`}>{m}</option>)}</optgroup>}{cloudModels.length > 0 && <optgroup label="DeepInfra">{cloudModels.map(m => <option key={`deepinfra:${m}`} value={`deepinfra:${m}`}>{m}</option>)}</optgroup>}</select></label><p className="settings-help">{chosenLocal ? 'Runs on this computer. Nothing leaves the machine.' : 'Transcript passages go to DeepInfra for each question.'}</p>{connectionError && <p className="settings-help">{connectionError}</p>}{health && !health.configured && <p className="settings-help">Start Ollama with "ollama serve", or add DEEPINFRA_API_KEY to .env.local.</p>}<button className="text-button" onClick={() => void checkHealth()}><RefreshCw size={13}/>Rescan models</button></section><section className="setting-section"><label className="setting-row"><span><span className="setting-title">Play after jumping</span><span className="settings-help">Resume the video at a cited moment.</span></span><input className="switch" type="checkbox" checked={playOnJump} onChange={e => updatePreferences({ playOnJump: e.target.checked })}/></label><label className="setting-row appearance"><span>Appearance</span><select value={theme} onChange={e => updatePreferences({ theme: e.target.value })}><option value="light">Light</option><option value="dark">Dark</option></select></label></section><section className="setting-section privacy-note"><p>Your API key stays in the local service. Questions and transcript passages go to DeepInfra only when a cloud model is selected.</p><p>Conversations stay in this browser session.</p></section><div className="settings-footer"><span>Cue <span>0.1</span></span><span title={new Date(__CUE_BUILT__).toISOString()}>built {new Date(__CUE_BUILT__).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></div></div></dialog>
+    <dialog ref={settingsDialog} className="settings-dialog" onCancel={() => setSettings(false)} onClick={e => { if (e.target === settingsDialog.current) setSettings(false); }}><div className="settings-inner"><div className="settings-header"><h2>Settings</h2><button className="icon-button" aria-label="Close settings" onClick={() => setSettings(false)}><X size={18}/></button></div><section className="setting-section"><div className="setting-title"><span>Model</span><span className={`connection-status ${health?.configured ? 'connected' : ''}`}>{health?.configured ? 'Connected' : 'Offline'}</span></div><label className="model-row"><span className="sr-only">Model</span><select aria-label="Model" value={modelValue} disabled={!localModels.length && !cloudModels.length} onChange={e => { const raw = e.target.value; const cut = raw.indexOf(':'); updatePreferences({ choice: { provider: raw.slice(0, cut) as ProviderId, model: raw.slice(cut + 1) } }); }}>{localModels.length > 0 && <optgroup label="This computer">{localModels.map(m => <option key={`ollama:${m}`} value={`ollama:${m}`}>{m}</option>)}</optgroup>}{cloudModels.length > 0 && <optgroup label="DeepInfra">{cloudModels.map(m => <option key={`deepinfra:${m}`} value={`deepinfra:${m}`}>{m}</option>)}</optgroup>}</select></label><p className="settings-help">{chosenLocal ? 'Runs on this computer. Nothing leaves the machine.' : 'Transcript passages go to DeepInfra for each question.'}</p>{connectionError && <p className="settings-help">{connectionError}</p>}{health && !health.configured && <p className="settings-help">Start Ollama with "ollama serve", or add DEEPINFRA_API_KEY to .env.local.</p>}<button className="text-button" onClick={() => void checkHealth()}><RefreshCw size={13}/>Rescan models</button></section><section className="setting-section"><label className="setting-row"><span><span className="setting-title">Play after jumping</span><span className="settings-help">Resume the video at a cited moment.</span></span><input className="switch" type="checkbox" checked={playOnJump} onChange={e => updatePreferences({ playOnJump: e.target.checked })}/></label><label className="setting-row appearance"><span>Appearance</span><select value={theme} onChange={e => updatePreferences({ theme: e.target.value })}><option value="light">Light</option><option value="dark">Dark</option></select></label></section><section className="setting-section privacy-note"><p>Your API key stays in the local service. Questions and transcript passages go to DeepInfra only when a cloud model is selected.</p><p>Conversations, drafts and quiz progress are saved in this browser for your last 150 videos.</p></section><div className="settings-footer"><span>Cue <span>0.1</span></span><span title={new Date(__CUE_BUILT__).toISOString()}>built {new Date(__CUE_BUILT__).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></div></div></dialog>
   </div>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);
