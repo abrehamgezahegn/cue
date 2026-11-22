@@ -1,7 +1,7 @@
 import './env';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatDuration, formatTime, normalizeSegments, parseCaptions, passageAround, readingTimeMinutes, videoIdFromUrl, wordCount } from '../src/shared/transcript';
+import { formatDuration, formatTime, normalizeSegments, parseCaptions, passageAround, readingTimeMinutes, segmentsAround, videoIdFromUrl, wordCount } from '../src/shared/transcript';
 import type { QuizQuestion } from '../src/shared/types';
 import { answerQuestion, coalesceCitations, parseModelJson, selectContext, validateAnswer } from '../server/answer';
 import { apiKey } from '../server/config';
@@ -70,6 +70,19 @@ test('wordCount counts runs of letters and digits across segments', () => {
   assert.equal(wordCount(segs), 6, 'punctuation is not a word, numbers are');
   assert.equal(wordCount([]), 0);
   assert.equal(wordCount(normalizeSegments([{ start: 0, text: '   ' }])), 0, 'whitespace only is zero words');
+});
+
+test('segmentsAround keeps 30s either side of each citation, merges overlaps and marks gaps', () => {
+  const segs = normalizeSegments(Array.from({ length: 40 }, (_, i) => ({ start: i * 10, text: `line ${i}` })));
+  const one = segmentsAround(segs, [100]).map(row => row.segment.start);
+  assert.deepEqual(one, [70, 80, 90, 100, 110, 120, 130]);
+  const merged = segmentsAround(segs, [100, 130]);
+  assert.deepEqual(merged.map(row => row.segment.start), [70, 80, 90, 100, 110, 120, 130, 140, 150, 160]);
+  assert.ok(merged.every(row => !row.gap), 'overlapping windows read as one passage');
+  const apart = segmentsAround(segs, [50, 300]);
+  assert.deepEqual(apart.filter(row => row.gap).map(row => row.segment.start), [270], 'a gap marks the second window');
+  assert.deepEqual(segmentsAround(segs, [0]).map(row => row.segment.start), [0, 10, 20, 30], 'clamped at the start');
+  assert.deepEqual(segmentsAround(segs, []), []);
 });
 
 test('readingTimeMinutes is conservative and never returns zero', () => {
