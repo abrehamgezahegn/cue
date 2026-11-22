@@ -1,4 +1,4 @@
-import type { Health, Transcript, Answer, ChatMessage, Grade, Quiz, Target } from '../shared/types';
+import type { Health, Transcript, Answer, AnswerVisual, ChatMessage, Grade, Quiz, Target } from '../shared/types';
 export interface Clarification { text: string; model: string }
 import { requestFailureMessage } from '../shared/errors';
 declare const __CUE_TOKEN__: string;
@@ -36,6 +36,8 @@ export const api = {
     request<Grade>('/api/grade', { question: question.prompt, reference: String(question.answer), accept: question.accept || [], context: question.explanation || '', passage: question.passage || '', rubric: question.rubric || [], given, ...(target ? { provider: target.provider, model: target.model } : {}) }, signal),
   quiz: (transcript: Transcript, options: { title: string; count: number; difficulty: string; avoid?: string[]; focus?: { prompt: string; segmentIds: number[] }[] }, target: Target | null, signal: AbortSignal) =>
     request<Quiz>('/api/quiz', { segments: transcript.segments, ...options, ...(target ? { provider: target.provider, model: target.model } : {}) }, signal),
+  visualize: (question: string, answer: Answer, transcript: Transcript, target: Target | null, signal: AbortSignal) =>
+    request<{ visuals: (AnswerVisual | null)[]; model: string }>('/api/visualize', { question, segments: transcript.segments, parts: answer.parts.map(part => ({ text: part.text, segmentIds: part.citations.map(citation => citation.segmentId) })), ...(target ? { provider: target.provider, model: target.model } : {}) }, signal),
   ask: (question: string, transcript: Transcript, history: ChatMessage[], target: Target | null, signal: AbortSignal) =>
     request<Answer>('/api/ask', { question, segments: transcript.segments, history, ...(target ? { provider: target.provider, model: target.model } : {}) }, signal),
 };

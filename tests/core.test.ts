@@ -3,7 +3,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { formatDuration, formatTime, normalizeSegments, parseCaptions, passageAround, readingTimeMinutes, videoIdFromUrl, wordCount } from '../src/shared/transcript';
 import type { QuizQuestion } from '../src/shared/types';
+import { mermaidSource } from '../src/shared/visual';
 import { answerQuestion, coalesceCitations, parseModelJson, selectContext, validateAnswer } from '../server/answer';
+import { groundVisual, validateVisual, validateVisuals, visualizeAnswer } from '../server/visualize';
 import { apiKey } from '../server/config';
 import { requestFailureMessage } from '../src/shared/errors';
 import { buildGradeMessages, shorten, validateGrade } from '../server/grade';
@@ -101,6 +103,90 @@ test('rejects invented citations and uncited claims', () => {
   assert.throws(() => validateAnswer({ notFound: false, parts: [{ text: 'A claim.', segmentIds: [0, 9] }] }, segments, 'full', 'test'), /outside the transcript/);
   assert.throws(() => validateAnswer({ notFound: false, parts: [{ text: 'A claim.', segmentIds: [] }] }, segments, 'full', 'test'));
   assert.throws(() => validateAnswer({ notFound: false, parts: [] }, segments, 'full', 'test'));
+});
+test('visuals keep well-formed shapes and drop broken ones, one per paragraph', () => {
+  const flow = { kind: 'flow', title: 'Focus routine', steps: ['Phone in another room', '  Work  ', 'Take a break'], columns: [], rows: [], lines: [], source: '' };
+  const visuals = validateVisuals({ visuals: [
+    flow,
+    { kind: 'flow', title: '', steps: ['Only one'] },
+    { kind: 'table', title: 'Phone vs paper', columns: ['Aspect', 'Phone nearby', 'Phone away'], rows: [
+      ['Phone nearby', 'Phone away'], ['Checks', 'often', 'rarely', 'extra'], ['Focus', 'broken', ''], ['', 'a', 'b'],
+    ] },
+    { kind: 'chart' },
+  ] }, ['passage', 'passage', 'passage', 'passage', 'passage']);
+  assert.equal(visuals.length, 5, 'one entry per paragraph, even when the model returns fewer');
+  // A flow becomes a straight-chain diagram.
+  assert.deepEqual(visuals[0], { kind: 'diagram', title: 'Focus routine', direction: 'TD',
+    nodes: [{ id: 's1', label: 'Phone in another room' }, { id: 's2', label: 'Work' }, { id: 's3', label: 'Take a break' }],
+    edges: [{ from: 's1', to: 's2', label: '' }, { from: 's2', to: 's3', label: '' }] });
+  assert.equal(visuals[1], null);
+  // Columns are the things compared; a header-like "Aspect" column, a row repeating the header, a row
+  // without an aspect and a row with one value are dropped, and extra cells are cut. "A vs B" says nothing.
+  assert.deepEqual(visuals[2], { kind: 'table', title: '', columns: ['Phone nearby', 'Phone away'], rows: [['Checks', 'often', 'rarely']] });
+  assert.deepEqual(visuals.slice(3), [null, null]);
+  // A paragraph without a passage gets nothing to draw from.
+  assert.deepEqual(validateVisuals({ visuals: [flow] }, ['']), [null]);
+});
+test('the visual call sends each paragraph with the transcript around its citations', async () => {
+  const transcript = normalizeSegments([{ start: 0, text: 'First the query meets every key.' }, { start: 5, text: 'Then a softmax turns scores into weights.' }, { start: 600, text: 'Far away and unrelated.' }]);
+  let sent: any = null;
+  const fetcher = async (_url: unknown, init: any) => {
+    sent = JSON.parse(init.body);
+    const visuals = [{ kind: 'diagram', title: '', direction: 'TD', nodes: [{ id: 'q', label: 'Query meets keys' }, { id: 's', label: 'Softmax weights' }], edges: [{ from: 'q', to: 's', label: 'scores' }], columns: [], rows: [], lines: [], source: '' }];
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ visuals }) } }] }), { status: 200 });
+  };
+  const previous = process.env.DEEPINFRA_API_KEY; process.env.DEEPINFRA_API_KEY = previous || 'test';
+  try {
+    const result = await visualizeAnswer({ question: 'How does attention work?', segments: transcript, parts: [{ text: 'Queries meet keys.', segmentIds: [0] }] }, { provider: 'deepinfra', model: 'test' }, AbortSignal.timeout(5000), fetcher as typeof fetch);
+    assert.equal(result.visuals[0]?.kind, 'diagram');
+    const paragraphs = JSON.parse(sent.messages[1].content).paragraphs;
+    assert.match(paragraphs[0].passage, /softmax/);
+    assert.doesNotMatch(paragraphs[0].passage, /Far away/);
+  } finally { if (previous === undefined) delete process.env.DEEPINFRA_API_KEY; else process.env.DEEPINFRA_API_KEY = previous; }
+});
+test('diagrams keep only arrows between real boxes, and only boxes an arrow touches', () => {
+  const diagram = validateVisual({ kind: 'diagram', title: '', direction: 'LR', nodes: [
+    { id: 'a', label: 'Query' }, { id: 'b', label: 'Key' }, { id: 'c', label: 'Dot product' }, { id: 'a', label: 'Duplicate id' }, { id: 'd', label: 'Unused' }, { id: 'e', label: '' },
+  ], edges: [
+    { from: 'a', to: 'c', label: 'compared' }, { from: 'b', to: 'c', label: '' }, { from: 'a', to: 'c', label: 'again' }, { from: 'c', to: 'zz', label: '' }, { from: 'c', to: 'c', label: '' },
+  ] });
+  assert.deepEqual(diagram, { kind: 'diagram', title: '', direction: 'LR',
+    nodes: [{ id: 'a', label: 'Query' }, { id: 'b', label: 'Key' }, { id: 'c', label: 'Dot product' }],
+    edges: [{ from: 'a', to: 'c', label: 'compared' }, { from: 'b', to: 'c', label: '' }] });
+  assert.equal(validateVisual({ kind: 'diagram', title: '', direction: 'TD', nodes: [{ id: 'a', label: 'Alone' }], edges: [] }), undefined);
+  // Side by side is only allowed for a few boxes.
+  const wide = validateVisual({ kind: 'diagram', title: '', direction: 'LR', nodes: 'abcde'.split('').map(id => ({ id, label: id })), edges: 'abcd'.split('').map((id, i) => ({ from: id, to: 'bcde'[i], label: '' })) });
+  assert.equal((wide as { direction: string }).direction, 'TD');
+});
+test('Mermaid source cannot be changed by what a label says', () => {
+  const source = mermaidSource({ kind: 'diagram', title: '', direction: 'TD',
+    nodes: [{ id: 'x"]; click x call alert(1); %%', label: 'say "hi" [then] -->|x| y; end' }, { id: 'b', label: 'Next' }],
+    edges: [{ from: 'x"]; click x call alert(1); %%', to: 'b', label: 'a|b' }] });
+  assert.equal(source.split('\n').length, 4);
+  assert.match(source, /^flowchart TD\n {2}n1\["say #34;hi#34; #91;then#93; --#62;#124;x#124; y#59; end"\]\n {2}n2\["Next"\]\n {2}n1 -->\|"a#124;b"\| n2$/);
+  assert.ok(!source.includes('alert'));
+});
+test('a visual cannot carry a figure the transcript does not say', () => {
+  const tokens = { kind: 'example', title: '', lines: ['"hello" becomes token 123', '"world" becomes token 456'], source: 'video' };
+  // Invented numbers turn the video's "example" into an illustration, and remove a flow or table outright.
+  assert.equal((groundVisual(validateVisual(tokens), 'hello world is two tokens') as { source: string }).source, 'illustration');
+  assert.equal((groundVisual(validateVisual(tokens), 'hello is 123 and world is 456') as { source: string }).source, 'video');
+  assert.equal(groundVisual(validateVisual({ kind: 'flow', title: '', steps: ['Train for 3 months', 'Fine-tune'] }), 'train then fine-tune'), undefined);
+  assert.ok(groundVisual(validateVisual({ kind: 'flow', title: '', steps: ['Train for three months', 'Fine-tune'] }), 'we train for three months then fine-tune'));
+});
+test('generic titles are dropped and a repeated visual is drawn once', () => {
+  assert.equal(validateVisual({ kind: 'flow', title: 'Tokenization Process', steps: ['a', 'b'] })?.title, '');
+  assert.equal(validateVisual({ kind: 'flow', title: 'How text becomes token IDs', steps: ['a', 'b'] })?.title, 'How text becomes token IDs');
+  const table = { kind: 'table', title: '', columns: ['A', 'B'], rows: [['Data', 'x', 'y']] };
+  assert.deepEqual(validateVisuals({ visuals: [table, { ...table, title: 'Same table' }] }, ['p', 'p']).map(Boolean), [true, false]);
+});
+test('examples say where they came from, and an answer carries at most two visuals', () => {
+  assert.deepEqual(validateVisual({ kind: 'example', title: '', lines: ['Put it in another room.'], source: 'video' }), { kind: 'example', title: '', lines: ['Put it in another room.'], source: 'video' });
+  // Anything not marked as the video's own example is shown as an illustration.
+  assert.equal((validateVisual({ kind: 'example', title: '', lines: ['Say 3 checks an hour.'], source: '' }) as { source: string }).source, 'illustration');
+  assert.equal(validateVisual(null), undefined);
+  const example = (line: string) => ({ kind: 'example', title: '', lines: [line], source: 'video' });
+  assert.deepEqual(validateVisuals({ visuals: ['One.', 'Two.', 'Three.'].map(example) }, ['p', 'p', 'p']).map(Boolean), [true, true, false]);
 });
 test('not-found responses cannot smuggle unsupported model claims', () => {
   const result = validateAnswer({ notFound: true, parts: [{ text: 'An unsupported claim.', segmentIds: [] }] }, segments, 'full', 'test');
