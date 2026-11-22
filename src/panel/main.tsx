@@ -5,7 +5,7 @@ import '@fontsource-variable/geist';
 import './style.css';
 import { api, isExtension, readSaved, save } from './api';
 import { demoTranscript, demoVideo } from './demo';
-import { formatTime, formatDuration, passageAround, readingTimeMinutes, videoIdFromUrl, wordCount } from '../shared/transcript';
+import { formatTime, formatDuration, passageAround, readingTimeMinutes, segmentsAround, videoIdFromUrl, wordCount } from '../shared/transcript';
 import type { ChatMessage, Citation, Health, ProviderId, Quiz, QuizQuestion, Transcript, Video } from '../shared/types';
 
 declare const __CUE_BUILT__: string;
@@ -45,6 +45,7 @@ function App() {
   const [deeperOpen, setDeeperOpen] = useState(false);
   const [deeperCount, setDeeperCount] = useState(3);
   const [quizClarifyBusy, setQuizClarifyBusy] = useState(false);
+  const [openPassage, setOpenPassage] = useState<string | null>(null);
   const [quizDrafts, setQuizDrafts] = useState<Record<number, string>>({});
   const [tab, setTab] = useState<'ask' | 'transcript' | 'quiz'>('ask');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -371,6 +372,23 @@ function App() {
   function openQuestion(index: number) {
     setQuizIndex(index); setQuizDone(false);
   }
+  /** The transcript within 30s of each citation, folded behind a toggle. One open at a time, keyed by `key`. */
+  function citedPassage(key: string, citations: Citation[]) {
+    if (!transcript || !citations.length) return null;
+    const rows = segmentsAround(transcript.segments, citations.map(citation => citation.start));
+    if (!rows.length) return null;
+    const open = openPassage === key;
+    const cited = new Set(citations.map(citation => citation.segmentId));
+    const first = formatTime(rows[0].segment.start), last = formatTime(rows[rows.length - 1].segment.start);
+    const range = first === last ? first : `${first}–${last}`;
+    return <div className="cited-passage">
+      <button className="cited-passage-toggle" aria-expanded={open} onClick={() => setOpenPassage(open ? null : key)}><ChevronDown size={13} className={open ? 'expanded' : ''}/>Transcript {range}</button>
+      {open && <div className="cited-passage-rows">{rows.map(({ segment, gap }) => <React.Fragment key={segment.id}>
+        {gap && <span className="cited-passage-gap" aria-hidden="true">…</span>}
+        <button className={`transcript-row ${cited.has(segment.id) ? 'cited' : ''}`} onClick={() => void seek({ segmentId: segment.id, start: segment.start, text: segment.text })}><time>{formatTime(segment.start)}</time><span>{segment.text}</span></button>
+      </React.Fragment>)}</div>}
+    </div>;
+  }
   function TimeLink({ citation }: { citation: Citation }) {
     return <button className="time-link" title={citation.text} onClick={() => void seek(citation)} aria-label={`Jump to ${formatTime(citation.start)}: ${citation.text}`}><Play size={10} fill="currentColor" />{formatTime(citation.start)}</button>;
   }
@@ -430,7 +448,7 @@ function App() {
       {mode === 'loading' && <div className="loading-state" role="status"><LoaderCircle className="spin" size={18}/><h2>{loadLabel}</h2></div>}
       {mode === 'missing' && <div className="empty-state"><FileText size={26}/><h2>No transcript yet</h2><p>{error}</p><button className="secondary-button" onClick={() => video && void loadTranscript(video, tabId)}><RefreshCw size={14}/>Try again</button><p className="small-note">Some videos don't have captions available.</p></div>}
       {ready && tab === 'ask' && <>
-        {messages.length === 0 ? <div className="welcome"><div className="suggestions">{['Give me the key takeaways', 'Explain the main idea simply', 'What can I put into practice?'].map(suggestion => <button key={suggestion} onClick={() => void ask(suggestion)}><span>{suggestion}</span><ArrowUpRight size={14}/></button>)}</div></div> : <div className="messages" role="log" aria-label="Conversation">{messages.map(m => m.role === 'user' ? <div className="user-message" key={m.id}>{m.text}</div> : <article className="assistant-message" key={m.id}>{m.answer?.parts.map((p, i) => <div className="answer-part" key={i}><p>{p.text}</p>{p.citations.length > 0 && <div className="citations">{p.citations.map(c => <TimeLink key={c.segmentId} citation={c}/>)}</div>}</div>)}{m.answer?.coverage === 'selected' && <p className="coverage-note">Based on selected passages from this long video.</p>}<div className="answer-actions"><button className="icon-button" title="Copy answer" aria-label="Copy answer" onClick={() => void copy(m)}>{copied === m.id ? <Check size={14}/> : <Copy size={14}/>}</button>{copied === m.id && <span>Copied</span>}</div></article>)}</div>}
+        {messages.length === 0 ? <div className="welcome"><div className="suggestions">{['Give me the key takeaways', 'Explain the main idea simply', 'What can I put into practice?'].map(suggestion => <button key={suggestion} onClick={() => void ask(suggestion)}><span>{suggestion}</span><ArrowUpRight size={14}/></button>)}</div></div> : <div className="messages" role="log" aria-label="Conversation">{messages.map(m => m.role === 'user' ? <div className="user-message" key={m.id}>{m.text}</div> : <article className="assistant-message" key={m.id}>{m.answer?.parts.map((p, i) => <div className="answer-part" key={i}><p>{p.text}</p>{p.citations.length > 0 && <div className="citations">{p.citations.map(c => <TimeLink key={c.segmentId} citation={c}/>)}</div>}{citedPassage(`ask:${m.id}:${i}`, p.citations)}</div>)}{m.answer?.coverage === 'selected' && <p className="coverage-note">Based on selected passages from this long video.</p>}<div className="answer-actions"><button className="icon-button" title="Copy answer" aria-label="Copy answer" onClick={() => void copy(m)}>{copied === m.id ? <Check size={14}/> : <Copy size={14}/>}</button>{copied === m.id && <span>Copied</span>}</div></article>)}</div>}
         {busy && <div className="thinking" role="status"><Mark small/><span>Finding the right moments</span><span className="thinking-dots">···</span>{busySeconds >= 5 && <span className="thinking-time">{busySeconds}s</span>}</div>}
         {error && !busy && <div className="inline-error" role="alert"><AlertCircle size={16}/><div><p>{error}</p><button onClick={() => void retry()}>Try again <RefreshCw size={12}/></button></div></div>}
         <div ref={chatEnd}/>
@@ -505,6 +523,7 @@ function App() {
             {quizQuestion.type === 'long' && quizQuestion.rubric && <div className="quiz-rubric"><p>An answer needed:</p><ul>{quizQuestion.rubric.map(point => <li key={point}>{point}</li>)}</ul><p className="quiz-model-answer">{String(quizQuestion.answer)}</p></div>}
             {quizQuestion.type === 'short' && !quizAnswer.correct && <p className="quiz-expected">The video says: <strong>{String(quizQuestion.answer)}</strong></p>}
             <div className="citations">{quizQuestion.citations.map(citation => <TimeLink key={citation.segmentId} citation={citation}/>)}</div>
+            {citedPassage(`quiz:${quizQuestion.id}`, quizQuestion.citations)}
           </div>}
           {deeperOpen && <div className="quiz-confirm">
             <p>Deeper on {quizMarked.length} marked {quizMarked.length === 1 ? 'passage' : 'passages'}. How many questions?</p>

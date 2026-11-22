@@ -38,6 +38,21 @@ export function passageAround(segments: Segment[], starts: number[], options: { 
   return text.slice(0, cut > max * 0.8 ? cut : max);
 }
 
+/** Segments starting within `pad` seconds of any cited moment, in order. Overlapping windows merge;
+ *  `gap` marks a row that follows skipped transcript, so separate windows read as separate. */
+export function segmentsAround(segments: Segment[], starts: number[], pad = 30): Array<{ segment: Segment; gap: boolean }> {
+  const times = starts.filter(Number.isFinite);
+  if (!times.length) return [];
+  const rows: Array<{ segment: Segment; gap: boolean }> = [];
+  let last = -1;
+  segments.forEach((segment, index) => {
+    if (!times.some(time => segment.start >= time - pad && segment.start <= time + pad)) return;
+    rows.push({ segment, gap: last >= 0 && index !== last + 1 });
+    last = index;
+  });
+  return rows;
+}
+
 export function parseCaptions(raw: string | object): Segment[] {
   let data: any = raw;
   if (typeof raw === 'string') {
