@@ -28,7 +28,8 @@ export interface Health {
   provider: ProviderId;
   model: string;
   providers: {
-    deepinfra: { configured: boolean; models: string[] };
+    /** prices: US dollars per million tokens; missing until DeepInfra's catalogue has loaded. */
+    deepinfra: { configured: boolean; models: string[]; prices?: Record<string, { input: number; output: number }> };
     ollama: { available: boolean; url: string; models: string[] };
   };
 }

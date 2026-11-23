@@ -184,8 +184,9 @@ Everything is optional and lives in `.env.local`. See [`.env.example`](.env.exam
 
 | Variable | What it does |
 | --- | --- |
-| `DEEPINFRA_API_KEY` | Enables the DeepInfra model in the picker. |
-| `DEEPINFRA_MODEL` | Which DeepInfra model. Default `Qwen/Qwen3-32B`. |
+| `DEEPINFRA_API_KEY` | Enables the DeepInfra models in the picker. |
+| `DEEPINFRA_MODEL` | The default DeepInfra model. Default `deepseek-ai/DeepSeek-V4-Flash`. |
+| `DEEPINFRA_MODELS` | Comma-separated DeepInfra models for the picker, replacing the built-in list (DeepSeek V4 Flash, Qwen3-32B, V4.1 Flash, V4 Pro, GLM-5.3 Flash, Gemma 4 31B turbo). |
 | `OLLAMA_URL` | Where Ollama listens. Default `http://127.0.0.1:11434`. |
 | `CUE_COOKIES_FROM` | Lets `yt-dlp` use a browser's YouTube cookies (`chrome`, `safari`, `firefox`, `edge`, `brave`, `chromium`). |
 | `CUE_COOKIES_FILE` | A `cookies.txt` file for `yt-dlp` instead. |

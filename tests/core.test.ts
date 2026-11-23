@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { formatDuration, formatTime, normalizeSegments, parseCaptions, passageAround, readingTimeMinutes, segmentsAround, videoIdFromUrl, wordCount } from '../src/shared/transcript';
 import type { QuizQuestion } from '../src/shared/types';
 import { answerQuestion, coalesceCitations, parseModelJson, selectContext, validateAnswer } from '../server/answer';
-import { apiKey } from '../server/config';
+import { apiKey, cloudModels } from '../server/config';
+import { deepInfraCatalogue, reasoningSwitch } from '../server/providers';
 import { requestFailureMessage } from '../src/shared/errors';
 import { buildGradeMessages, shorten, validateGrade } from '../server/grade';
 import { applyAudit, asksForLabel, asksForNumber, coverageOfVideo, echoesQuestion, figuresIn, inventsFigure, quotesItsSource, typeMix, validateQuiz, verifySupport } from '../server/quiz';
@@ -351,4 +352,24 @@ test('Ollama adapter stays local: no authorization header, schema passed as form
 test('provider failures do not echo provider bodies or secrets', async () => {
   const mock = (async () => new Response('Secret upstream error with credential', { status: 401 })) as typeof fetch;
   await assert.rejects(answerQuestion({ question: 'test', segments }, { provider: 'deepinfra', model: 'test' }, new AbortController().signal, mock), /did not accept the API key/);
+});
+
+test('reasoning is switched per model family, and never turned on for Gemma 4', () => {
+  assert.deepEqual(reasoningSwitch('Qwen/Qwen3-32B', true), { chat_template_kwargs: { enable_thinking: true } });
+  assert.deepEqual(reasoningSwitch('deepseek-ai/DeepSeek-V4-Flash', false), { chat_template_kwargs: { thinking: false } });
+  assert.deepEqual(reasoningSwitch('deepseek-ai/DeepSeek-V4-Flash', true), { chat_template_kwargs: { thinking: true } });
+  assert.deepEqual(reasoningSwitch('google/gemma-4-31B-it-turbo', true), {});
+});
+
+test('the DeepInfra catalogue gives dollars per million tokens and marks deprecated models', async () => {
+  const fetcher = (async () => new Response(JSON.stringify([
+    { model_name: 'deepseek-ai/DeepSeek-V4-Flash', pricing: { cents_per_input_token: 0.000009, cents_per_output_token: 0.000018 } },
+    { model_name: 'zai-org/GLM-5.3-Flash', deprecated: 1760000000, pricing: { cents_per_input_token: 0.000015, cents_per_output_token: 0.00005 } },
+    { model_name: 'someone/not-offered', pricing: { cents_per_input_token: 1, cents_per_output_token: 1 } },
+  ]))) as typeof fetch;
+  const { prices, gone } = await deepInfraCatalogue(fetcher);
+  assert.deepEqual(prices['deepseek-ai/DeepSeek-V4-Flash'], { input: 0.09, output: 0.18 });
+  assert.equal(prices['someone/not-offered'], undefined);
+  assert.ok(gone.has('zai-org/GLM-5.3-Flash'));
+  assert.ok(cloudModels.includes('deepseek-ai/DeepSeek-V4-Flash'));
 });
