@@ -2,6 +2,7 @@ import type { Quiz, QuizQuestion, Segment } from '../src/shared/types';
 import { completeJson, type Target } from './providers';
 import { coalesceCitations, parseModelJson, selectContext } from './answer';
 import { passageAround } from '../src/shared/transcript';
+import { randomBytes } from 'node:crypto';
 
 const schema = {
   type: 'object', additionalProperties: false, required: ['questions'],
@@ -20,7 +21,9 @@ const schema = {
           answerText: { type: 'string' },
           accept: { type: 'array', items: { type: 'string' } },
           rubric: { type: 'array', items: { type: 'string' } },
-          evidence: { type: 'string' },
+          // Capped in the schema, not just the prompt: asked for 30-80 characters, Qwen3-32B wrote 90-270, and
+          // past the first ten words or so it reconstructs speech instead of copying it.
+          evidence: { type: 'string', maxLength: 90 },
           explanation: { type: 'string' },
           segmentIds: { type: 'array', items: { type: 'integer' } },
         },
@@ -49,8 +52,12 @@ const LEVEL_GUIDANCE: Record<Level, string> = {
   s: 'This is the hardest tier: questions that require combining several parts of the video, not just one. Ask for a prediction about a case the video never shows, a counterfactual (what breaks if one premise is dropped), a quantitative consequence of a stated number, the strongest objection to the speaker\'s claim, or a distinction between two things the video treats as similar. A careful viewer who understood everything should still have to think hard; someone who merely remembers the video should fail. Every question must remain answerable from the transcript.',
 };
 
+// Six characters from the OS random source, made in code before the prompt is written. Everything a run varies
+// (lens, angles, focus) is derived from it, so the model is steered by our randomness, not left to its own
+// habits, and a logged seed reproduces the prompt exactly.
+const SEED_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 export function makeSeed() {
-  return Math.random().toString(36).slice(2, 8).padEnd(6, '0');
+  return Array.from(randomBytes(6), byte => SEED_ALPHABET[byte % SEED_ALPHABET.length]).join('');
 }
 function hash(seed: string) {
   let value = 2166136261;
@@ -123,12 +130,12 @@ export function windows(count: number, segments: Segment[]): string {
 
 export function buildQuizMessages(count: number, context: { segments: Segment[]; coverage: 'full' | 'selected' }, title: string, level: Level = 'medium', avoid: string[] = [], only: string[] = [], seed = makeSeed()) {
   return [
-    { role: 'system', content: `You write comprehension quizzes about a YouTube video, for someone who just watched it. Use ONLY the transcript below. Return JSON matching the schema. Write exactly ${count} questions about different parts of the video, in the order the material appears. Spread them across the whole video using these target windows, one question per window, in order: ${windows(count, context.segments)}. Each question must be answered by something said inside its own window, and must cite a segment id from that window's range. Difficulty: ${level === 's' ? 'S tier (the hardest)' : level}. ${LEVEL_GUIDANCE[level]} This run, lean on ${FOCUS[Math.floor(Math.random() * FOCUS.length)]}. Run seed ${seed}: approach the material as ${shuffled(LENSES, seed)[0]}, and give each question its own angle in order — ${shuffled(level === 's' ? S_ANGLES : ANGLES, seed + 'a').slice(0, count).join('; ')}. Do not mention the seed, the lens or the angles in the questions.${avoid.length ? ` Do not repeat or rephrase any of these questions that were already asked: ${avoid.slice(0, 8).map(q => `"${q.slice(0, 90)}"`).join('; ')}.` : ''} ${only.length ? `All ${count} questions must be of type ${only.map(type => `"${type}"`).join(' or ')}.` : `The mix must be exactly ${typeMix(count).choice} of type "choice", ${typeMix(count).boolean} of type "boolean", ${typeMix(count).short} of type "short" and ${typeMix(count).long} of type "long".`} A question of another type does not count:
+    { role: 'system', content: `You write comprehension quizzes about a YouTube video, for someone who just watched it. Use ONLY the transcript below. Return JSON matching the schema. Write exactly ${count} questions about different parts of the video, in the order the material appears. Spread them across the whole video using these target windows, one question per window, in order: ${windows(count, context.segments)}. Each question must be answered by something said inside its own window, and must cite a segment id from that window's range. Difficulty: ${level === 's' ? 'S tier (the hardest)' : level}. ${LEVEL_GUIDANCE[level]} This run, lean on ${shuffled(FOCUS, seed + 'f')[0]}. Run seed ${seed}: approach the material as ${shuffled(LENSES, seed)[0]}, and give each question its own angle in order — ${shuffled(level === 's' ? S_ANGLES : ANGLES, seed + 'a').slice(0, count).join('; ')}. Do not mention the seed, the lens or the angles in the questions.${avoid.length ? ` Do not repeat or rephrase any of these questions that were already asked: ${avoid.slice(0, 8).map(q => `"${q.slice(0, 90)}"`).join('; ')}.` : ''} ${only.length ? `All ${count} questions must be of type ${only.map(type => `"${type}"`).join(' or ')}.` : `The mix must be exactly ${typeMix(count).choice} of type "choice", ${typeMix(count).boolean} of type "boolean", ${typeMix(count).short} of type "short" and ${typeMix(count).long} of type "long".`} A question of another type does not count:
 - "choice": four options, exactly one correct, three plausible distractors that are wrong but related. answerIndex is the 0-based index of the correct option.
 - "boolean": a claim that is either clearly true or clearly false according to the transcript. answerBool is the verdict.
 - "long": an open question that requires explaining or connecting something — why something happens, how two ideas relate, what would follow. rubric lists 2-4 short points a good answer must contain, each one something the speaker actually says in the cited passages — never general knowledge or your own inference; answerText is a model answer of one to three sentences built from those points. Never ask a long question whose answer is a single fact.
 - "short": a question whose answer is at most five words. answerText is the canonical answer; accept lists 2-3 alternative spellings or paraphrases that mean the same thing. The answer must be a specific fact from the video — a name, a number, an example, an action, a cause. It must never restate the question or repeat the question's own premise: "What is the main limitation?" cannot be answered "it has limitations". If the only answer you can find is a restatement, ask a different question that has a concrete answer.
-Every question cites 1-3 segmentIds, and evidence is a verbatim quote of at most 120 characters copied exactly from one of those segments that settles the answer: the sentence stating the fact, or the sentence that contradicts a false claim. The explanation says why the answer is right in one sentence, without referring to segment numbers. A claim is never false just because the sampled transcript does not mention it — the transcript here is a sample of a long video, so silence proves nothing. Mark a boolean false only when the quoted passage contradicts the claim, and true only when it states it. The explanation says why the answer is right in one sentence, without referring to segment numbers. Never ask two questions about the same fact, and never ask the same thing twice in different words. Ask about quantities only when the reasoning matters (why the size is what it is, what follows from it), never as a figure to recall. Every number in a correct option, a true claim, a short answer, a model answer or a rubric point must be a number the speaker says in the cited passage — never invent or extrapolate a figure; if the passage gives no number, ask about the idea instead. Never test memorisation: do not ask for the outcome of one specific worked example, for a name or label the video mentions in passing, for a number quoted once, or for anything answerable by repeating a sentence. Ask about the idea, not the illustration of it. Never about trivia such as the speaker's clothing, and never about what the video does not say. No markdown. Video title for context only: ${title || 'unknown'}. Transcript coverage: ${context.coverage}.` },
+Every question cites 1-3 segmentIds, and evidence is a short verbatim quote of 30 to 80 characters, copied word for word from the text of those segments (it may run on from one segment into the next), that settles the answer — copy the words, do not tidy or rephrase them: the sentence stating the fact, or the sentence that contradicts a false claim. The explanation says why the answer is right in one sentence, without referring to segment numbers. A claim is never false just because the sampled transcript does not mention it — the transcript here is a sample of a long video, so silence proves nothing. Mark a boolean false only when the quoted passage contradicts the claim, and true only when it states it. The explanation says why the answer is right in one sentence, without referring to segment numbers. Never ask two questions about the same fact, and never ask the same thing twice in different words. Ask about quantities only when the reasoning matters (why the size is what it is, what follows from it), never as a figure to recall. Every number in a correct option, a true claim, a short answer, a model answer or a rubric point must be a number the speaker says in the cited passage — never invent or extrapolate a figure; if the passage gives no number, ask about the idea instead. Never test memorisation: do not ask for the outcome of one specific worked example, for a name or label the video mentions in passing, for a number quoted once, or for anything answerable by repeating a sentence. Ask about the idea, not the illustration of it. Never about trivia such as the speaker's clothing, and never about what the video does not say. No markdown. Video title for context only: ${title || 'unknown'}. Transcript coverage: ${context.coverage}.` },
     { role: 'user', content: `Transcript data:\n${context.segments.map(s => JSON.stringify({ id: s.id, text: s.text })).join('\n')}` },
   ];
 }
@@ -183,6 +190,75 @@ export function coverageOfVideo(quiz: Quiz, lastStart: number): number {
 const clean = (value: unknown, max: number) => typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, max) : '';
 // Quotes are compared without case or punctuation: captions and models disagree on both.
 const normal = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
+
+// Longest common subsequence of two word lists: how many of the quote's words appear, in order, in the passage.
+function wordsInOrder(quote: string[], passage: string[]): number {
+  let previous = new Array(passage.length + 1).fill(0);
+  for (const word of quote) {
+    const row = [0];
+    for (let j = 0; j < passage.length; j++) row.push(word === passage[j] ? previous[j] + 1 : Math.max(previous[j + 1], row[j]));
+    previous = row;
+  }
+  return previous[passage.length];
+}
+
+// Longest run of consecutive words the two lists share.
+function sharedRun(quote: string[], passage: string[]): number {
+  let previous = new Array(passage.length + 1).fill(0), best = 0;
+  for (const word of quote) {
+    const row = [0];
+    for (let j = 0; j < passage.length; j++) { row.push(word === passage[j] ? previous[j] + 1 : 0); best = Math.max(best, row[j + 1]); }
+    previous = row;
+  }
+  return best;
+}
+
+// Where in the transcript the model's quote really is. Auto-captions are ~40-character segments, so a sentence
+// almost always runs across two or three of them, and the model does not copy faithfully: it tidies wording
+// ("whereas" for "and"), splices two segments that are minutes apart, or finishes a real phrase with its own
+// words ("the better the model you use, the better the algorithm is going to do"). Demanding an exact copy of one
+// segment rejected 8 of 8 questions in a measured run and forced a second 90-second generation, then a timeout.
+// A quote now locates a run of up to six consecutive segments the model was sent when it matches exactly, when at
+// least 80% of its words appear there in order, or when at least six of its words appear there consecutively —
+// six words in a row is the speaker, not a coincidence. Returns the smallest run of segments that holds it, so
+// the citation and the stored evidence are the transcript's own words. Whether that passage settles the answer
+// is the support audit's call (`verifySupport`), not this one's.
+export function locateEvidence(quote: string, segments: Segment[], cited: number[] = []): { ids: number[]; text: string } | null {
+  const wanted = normal(quote);
+  const quoteWords = wanted.split(' ').filter(Boolean);
+  if (wanted.length < 12 || quoteWords.length < 3) return null;
+  const texts = segments.map(segment => normal(segment.text));
+  // 1 for an exact match, the in-order share when it reaches 0.8, and below 0.8 for a verbatim run only.
+  const score = (from: number, to: number) => {
+    const joined = texts.slice(from, to + 1).join(' ');
+    if (joined.includes(wanted)) return 1;
+    // A fuzzy match needs enough words to mean something; three words in order is a coincidence.
+    if (quoteWords.length < 5) return 0;
+    const passage = joined.split(' ');
+    const inOrder = wordsInOrder(quoteWords, passage) / quoteWords.length;
+    if (inOrder >= 0.8) return inOrder;
+    const run = sharedRun(quoteWords, passage);
+    return run >= 6 ? Math.min(0.79, 0.8 * run / quoteWords.length) : 0;
+  };
+  const near = (index: number) => cited.some(id => Math.abs(segments[index].id - id) <= 3);
+  let best: { from: number; to: number; value: number; near: boolean } | null = null;
+  for (let from = 0; from < segments.length; from++) {
+    let to = from;
+    // Only segments that follow one another in the video; a gap in the sample is a gap in the speech.
+    while (to + 1 < segments.length && to - from < 5 && segments[to + 1].id === segments[to].id + 1 && texts.slice(from, to + 1).join(' ').length < wanted.length * 1.5) to++;
+    const value = score(from, to);
+    if (value <= 0) continue;
+    const candidate = { from, to, value, near: near(from) || near(to) };
+    // Prefer the passage the model cited, then the closer match.
+    if (!best || (candidate.near && !best.near) || (candidate.near === best.near && candidate.value > best.value)) best = candidate;
+  }
+  if (!best) return null;
+  // Trim segments that do not carry the quote.
+  let { from, to } = best;
+  while (from < to && score(from + 1, to) >= best.value) from++;
+  while (to > from && score(from, to - 1) >= best.value) to--;
+  return { ids: segments.slice(from, to + 1).map(segment => segment.id), text: segments.slice(from, to + 1).map(segment => segment.text).join(' ') };
+}
 
 const NUMBER_WORDS: Record<string, number> = {
   zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
@@ -249,6 +325,8 @@ export function validateQuiz(raw: any, segments: Segment[], model: string, expec
     if (invented) { if (process.env.CUE_DEBUG_QUIZ) console.error(`[quiz] dropped invented figure ${invented}: ${question.prompt.slice(0, 80)}`); return; }
     questions.push(question);
   };
+  // Why each question was dropped, under CUE_DEBUG_QUIZ: a rejected run otherwise says only "not enough".
+  const drop = (reason: string, prompt: string) => { if (process.env.CUE_DEBUG_QUIZ) console.error(`[quiz] dropped (${reason}): ${prompt.slice(0, 80)}`); };
   const askedWords: Set<string>[] = [];
   for (const item of raw.questions) {
     if (!item || typeof item !== 'object') continue;
@@ -259,26 +337,25 @@ export function validateQuiz(raw: any, segments: Segment[], model: string, expec
       ? [...new Set(item.segmentIds.map((id: unknown) => typeof id === 'string' && /^\d+$/.test(id) ? Number(id) : id))]
         .filter((id: unknown): id is number => typeof id === 'number' && Number.isInteger(id) && byId.has(id))
       : [];
-    if (!prompt || !explanation || !ids.length) continue;
+    if (!prompt || !explanation || !ids.length) { drop('no prompt, explanation or valid id', prompt); continue; }
     // These guards need material to work with; a ten-segment clip has no room for another kind of question.
     const strict = level !== 'easy' && segments.length >= 30;
-    if (strict && quotesItsSource(prompt, byId.get(ids[0])!.text)) continue;
-    if (strict && asksForLabel(prompt)) continue;
-    if (strict && asksForNumber(prompt)) continue;
+    if (strict && quotesItsSource(prompt, byId.get(ids[0])!.text)) { drop('quotes its source', prompt); continue; }
+    if (strict && asksForLabel(prompt)) { drop('asks for a label', prompt); continue; }
+    if (strict && asksForNumber(prompt)) { drop('asks for a figure', prompt); continue; }
     // Two questions about the same fact is one question asked twice.
     const words = promptWords(prompt);
-    if (askedWords.some(existing => overlaps(existing, words) >= 0.6)) continue;
+    if (askedWords.some(existing => overlaps(existing, words) >= 0.6)) { drop('duplicate', prompt); continue; }
     askedWords.push(words);
     // The question must be pinned to a quote that really exists in what the model was given.
-    // If the quote lives in a neighbouring segment rather than the cited one, cite that segment instead.
-    const quote = normal(clean(item.evidence, 220));
-    if (quote.length < 12) continue;
-    const citedIds = ids.filter(id => normal(byId.get(id)!.text).includes(quote));
-    const holder = citedIds.length ? null : segments.find(segment => normal(segment.text).includes(quote));
-    const support = citedIds.length ? ids : holder ? [holder.id] : [];
-    if (!support.length) continue;
+    // If the quote lives elsewhere than the cited segments, cite where it really is instead.
+    const found = locateEvidence(clean(item.evidence, 220), segments, ids);
+    if (!found) { drop(`quote not in transcript: "${clean(item.evidence, 90)}"`, prompt); continue; }
+    const besideCited = found.ids.some(id => ids.some(cited => Math.abs(cited - id) <= 3));
+    const support = besideCited ? [...new Set([...ids, ...found.ids])].sort((a, b) => a - b) : found.ids;
     const citations = coalesceCitations(support.map(id => { const s = byId.get(id)!; return { segmentId: id, start: s.start, text: s.text }; }));
-    const base = { id: questions.length, prompt, explanation, citations, evidence: clean(item.evidence, 220) };
+    // The stored evidence is the transcript's own words, not the model's version of them.
+    const base = { id: questions.length, prompt, explanation, citations, evidence: clean(found.text, 220) };
 
     if (type === 'choice') {
       const options = Array.isArray(item.options) ? item.options.map((o: unknown) => clean(o, 160)).filter(Boolean) : [];
@@ -421,11 +498,21 @@ export async function createQuiz(input: any, target: Target, signal: AbortSignal
   // Ask for a couple more than needed: the evidence, label, number and duplicate guards each drop items,
   // so requesting exactly the target guarantees coming up short.
   const ask = Math.min(10, expected + 2);
-  const messages = buildQuizMessages(ask, { segments, coverage: segments.length === all.length ? 'full' : 'selected' }, clean(input.title, 120), level, avoid, [], seed);
-  if (process.env.CUE_DEBUG_QUIZ) console.error('[quiz] seed', seed);
-  if (focus.length) {
-    messages[0] = { role: 'system', content: `${messages[0].content}\nThis run goes deeper on passages the reader already found interesting. Write ${expected} question${expected === 1 ? '' : 's'} spread across the marked passages below, and make each one harder than the question it came from: ask what follows, why it is that way, what would break the claim, how it compares with something else in the video, or which exception the speaker allows. Never repeat the marked question or restate it.${focus.map((entry: { prompt: string }, index: number) => `\nMarked passage ${index + 1}: "${entry.prompt}"`).join('')}` };
-  }
+  // Each generation gets its own seed, derived from the run's: a retry that resent the first prompt word for
+  // word drew the same lens and angles, and so mostly the same questions.
+  let attempts = 0;
+  const nextSeed = () => {
+    const next = attempts++ === 0 ? seed : `${seed}${attempts - 1}`;
+    if (process.env.CUE_DEBUG_QUIZ) console.error('[quiz] seed', next);
+    return next;
+  };
+  const promptFor = (attemptSeed: string) => {
+    const messages = buildQuizMessages(ask, { segments, coverage: segments.length === all.length ? 'full' : 'selected' }, clean(input.title, 120), level, avoid, [], attemptSeed);
+    if (focus.length) {
+      messages[0] = { role: 'system', content: `${messages[0].content}\nThis run goes deeper on passages the reader already found interesting. Write ${expected} question${expected === 1 ? '' : 's'} spread across the marked passages below, and make each one harder than the question it came from: ask what follows, why it is that way, what would break the claim, how it compares with something else in the video, or which exception the speaker allows. Never repeat the marked question or restate it.${focus.map((entry: { prompt: string }, index: number) => `\nMarked passage ${index + 1}: "${entry.prompt}"`).join('')}` };
+    }
+    return messages;
+  };
   let sawJson = false;
   async function attemptWith(promptMessages: any[], want = expected): Promise<Quiz | null> {
     let content = await completeJson(target, promptMessages, schema, signal, fetcher, { temperature: 0.8 });
@@ -443,7 +530,7 @@ export async function createQuiz(input: any, target: Target, signal: AbortSignal
     try { return validateQuiz(parsed, segments, target.model, want, level, all); }
     catch (error: any) { if (process.env.CUE_DEBUG_QUIZ) console.error('[quiz] rejected:', error.message); return null; }
   }
-  const attempt = () => attemptWith(messages);
+  const attempt = () => attemptWith(promptFor(nextSeed()));
 
   const lastStart = segments.reduce((latest: number, segment: Segment) => Math.max(latest, segment.start), 0);
   let quiz = await attempt();
@@ -492,7 +579,7 @@ export async function createQuiz(input: any, target: Target, signal: AbortSignal
   if (missing.length && !focus.length && !small) {
     const need = Math.min(4, missing.reduce((total, type) => total + Math.max(1, Math.floor((wanted as any)[type])), 0));
     try {
-      const extra = await attemptWith(buildQuizMessages(need, { segments, coverage: segments.length === all.length ? 'full' : 'selected' }, clean(input.title, 120), level, quiz.questions.map(question => question.prompt), missing), need);
+      const extra = await attemptWith(buildQuizMessages(need, { segments, coverage: segments.length === all.length ? 'full' : 'selected' }, clean(input.title, 120), level, quiz.questions.map(question => question.prompt), missing, nextSeed()), need);
       if (extra) {
         // A top-up is held to the same audit as the quiz it joins.
         const extraAudit = await verifySupport(target, extra.questions, all, signal, fetcher).catch(() => null);

@@ -117,9 +117,12 @@ client is untrusted (usually too much anonymous traffic), not that the URL is wr
   difficulty are a choice to make, not a setting to remember. The same is true of "New quiz" on the
   summary. "Keep going" returns to the question you were on, untouched. Resetting also clears the saved
   quiz for that video, or a reload would resurrect the one you just discarded.
-- **Every run is seeded.** `makeSeed()` produces a six-character string per request; it deterministically
-  shuffles a list of lenses ("a sceptical viewer", "an engineer debugging this") and question angles
-  ("what would break it", "which assumption it rests on") into the prompt. Two runs on the same video
+- **Every run is seeded.** `makeSeed()` produces a six-character string per request from `crypto.randomBytes`,
+  in code, before the prompt is written; it deterministically shuffles a list of lenses ("a sceptical viewer",
+  "an engineer debugging this"), question angles ("what would break it", "which assumption it rests on") and
+  the "lean on" focus into the prompt. **Nothing in the prompt may use `Math.random()` directly** — the focus
+  once did, so a logged seed could not reproduce its run. A retry or top-up gets a seed derived from the run's
+  (`abc123` → `abc1230`, `abc1231`): resending the first prompt unchanged drew the same lens and angles. Two runs on the same video
   share no prompts — measured 15 unique out of 15. Combined with temperature 0.8 and the avoid list,
   repetition is gone; the seed is logged under `CUE_DEBUG_QUIZ` so a run can be reproduced.
 - **Ask for a surplus.** Requesting exactly N guarantees coming up short, because the evidence, label,
@@ -161,6 +164,16 @@ client is untrusted (usually too much anonymous traffic), not that the URL is wr
   found no link between tokenization and arithmetic, called the link false, and cited two segments that
   merely introduced tokenization. The Ask panel, sampling elsewhere, answered the opposite. **Silence in
   a sample is not evidence of absence**, so a claim now ships only with the words that settle it.
+  The quote is located by `locateEvidence`, not by "is this string inside one segment": captions are ~37
+  characters a segment, so a sentence spans two or three, and Qwen3-32B does not copy faithfully — it tidies
+  words, splices segments minutes apart, or finishes a real phrase with its own. The one-segment check
+  rejected 8 of 8 questions in a measured run, forced a second 90-second generation and ran into the 175s
+  timeout. A quote now matches up to six *consecutive* segments the model was sent (never across a gap in the
+  sample) exactly, with ≥80% of its words in order, or with ≥6 words in a row; the citation and the stored
+  `evidence` become that transcript span, never the model's wording. The schema caps `evidence` at 90
+  characters (`maxLength`), because the prompt alone did not: asked for 30–80, the model wrote 90–270, and
+  past ten words or so it reconstructs. Paraphrases and "transcript segments 38-44" are still rejected —
+  `CUE_DEBUG_QUIZ` prints every drop with its reason.
 - **Questions test understanding, not recall.** Three structural guards reject, for medium/hard on
   transcripts of 30+ segments: a prompt that **quotes its own passage** (memorisation of a sentence),
   a prompt that **asks for a label** ("what is X called"), and a prompt that **asks for a figure** ("how
