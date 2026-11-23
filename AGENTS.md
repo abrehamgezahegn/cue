@@ -210,7 +210,14 @@ client is untrusted (usually too much anonymous traffic), not that the URL is wr
   (`inventsFigure`): an example that invents one becomes an illustration, a diagram or table is dropped.
   The model once drew "hello" → ID 123 as "the video's own example". Generic titles ("X process",
   "A vs B") are removed, identical visuals are drawn once, and an answer carries two at most.
-- **Models**: picker lists Ollama `/api/tags` live plus the configured `DEEPINFRA_MODEL`. Ollama is
+- **Models**: picker lists Ollama `/api/tags` live plus `cloudModels` (`server/config.ts`): the configured
+  `DEEPINFRA_MODEL` (default DeepSeek V4 Flash: Qwen3-32B pricing, better quiz questions) and a curated DeepInfra list (Qwen3-32B, DeepSeek V4 Flash / V4.1 Flash / V4 Pro,
+  GLM-5.3 Flash, Gemma 4 31B turbo), replaceable with `DEEPINFRA_MODELS`. Each was probed for strict
+  `json_schema` output and a 1–2s short answer; Qwen3-235B-A22B (70s+) and gpt-oss-120b (always reasons)
+  were left out. Prices under the picker come from DeepInfra's public `/models/list`, read once per run
+  and never waited on for more than 1.5s; never hand-type a price. Reasoning is switched per family
+  (`reasoningSwitch`): Qwen `enable_thinking`, DeepSeek `thinking`, and **never** on for Gemma 4 — with
+  reasoning on it loops to `max_tokens` and returns broken JSON. Ollama is
   called on `/api/chat` with the JSON schema as `format` and **no** auth header. Small models that
   invent ids are rejected with "Try a larger model" — that refusal is correct, not a bug.
 

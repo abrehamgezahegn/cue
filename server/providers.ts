@@ -1,10 +1,43 @@
-import { apiKey, model as deepInfraModel, ollamaUrl } from './config';
+import { apiKey, cloudModels, model as deepInfraModel, ollamaUrl } from './config';
 
 export type ProviderId = 'deepinfra' | 'ollama';
 export interface Target { provider: ProviderId; model: string }
+/** US dollars per million tokens. */
+export interface Price { input: number; output: number }
 export interface ModelList {
-  deepinfra: { configured: boolean; models: string[] };
+  deepinfra: { configured: boolean; models: string[]; prices: Record<string, Price> };
   ollama: { available: boolean; url: string; models: string[] };
+}
+
+// Prices come from DeepInfra's public catalogue (no key), read once per run so the picker never shows a
+// figure typed in by hand that has since changed. A model the catalogue marks deprecated is dropped.
+let catalogue: Promise<{ prices: Record<string, Price>; gone: Set<string> }> | null = null;
+export function deepInfraCatalogue(fetcher: typeof fetch = fetch) {
+  catalogue ??= fetcher('https://api.deepinfra.com/models/list', { signal: AbortSignal.timeout(10_000) })
+    .then(response => response.ok ? response.json() : [])
+    .then((list: any[]) => {
+      const prices: Record<string, Price> = {};
+      const gone = new Set<string>();
+      for (const entry of Array.isArray(list) ? list : []) {
+        const name = String(entry?.model_name || '');
+        if (!cloudModels.includes(name)) continue;
+        if (entry.deprecated) gone.add(name);
+        const input = Number(entry.pricing?.cents_per_input_token), output = Number(entry.pricing?.cents_per_output_token);
+        // cents per token → dollars per million tokens
+        if (Number.isFinite(input) && Number.isFinite(output)) prices[name] = { input: Math.round(input * 1e6) / 100, output: Math.round(output * 1e6) / 100 };
+      }
+      return { prices, gone };
+    })
+    .catch(() => { catalogue = null; return { prices: {}, gone: new Set<string>() }; });
+  return catalogue;
+}
+
+// DeepInfra switches reasoning differently per family. Qwen3 and DeepSeek reason only when asked here;
+// Gemma 4 with reasoning on loops until max_tokens and returns broken JSON, so it is never asked.
+export function reasoningSwitch(model: string, think: boolean): Record<string, unknown> {
+  if (model.startsWith('Qwen/')) return { chat_template_kwargs: { enable_thinking: think } };
+  if (model.startsWith('deepseek-ai/')) return { chat_template_kwargs: { thinking: think } };
+  return {};
 }
 
 // Local models are read from the machine, not from a fixed list, so a fresh `ollama pull` shows up.
@@ -18,9 +51,13 @@ export async function ollamaModels(timeout = 1500): Promise<string[]> {
 }
 
 export async function listModels(): Promise<ModelList> {
-  const local = await ollamaModels();
+  const none = { prices: {}, gone: new Set<string>() };
+  // Every request lists models, so the catalogue may not hold one up: past 1.5s it is skipped this time and
+  // keeps loading for the next.
+  const priced = apiKey ? Promise.race([deepInfraCatalogue(), new Promise<typeof none>(done => setTimeout(done, 1500, none))]) : none;
+  const [local, { prices, gone }] = await Promise.all([ollamaModels(), priced]);
   return {
-    deepinfra: { configured: Boolean(apiKey), models: apiKey ? [deepInfraModel] : [] },
+    deepinfra: { configured: Boolean(apiKey), models: apiKey ? cloudModels.filter(m => m === deepInfraModel || !gone.has(m)) : [], prices },
     ollama: { available: local.length > 0, url: ollamaUrl, models: local },
   };
 }
@@ -102,7 +139,7 @@ export async function completeJson(target: Target, messages: unknown[], schema: 
   const response = await fetcher('https://api.deepinfra.com/v1/openai/chat/completions', {
     method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, signal,
     body: JSON.stringify({ model: target.model, temperature, max_tokens: options.think ? 8000 : 2500, stream: false,
-      ...(target.model.startsWith('Qwen/') ? { chat_template_kwargs: { enable_thinking: Boolean(options.think) } } : {}),
+      ...reasoningSwitch(target.model, Boolean(options.think)),
       response_format: { type: 'json_schema', json_schema: { name: 'video_answer', strict: true, schema } },
       messages }),
   });
