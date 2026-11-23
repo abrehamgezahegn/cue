@@ -194,6 +194,22 @@ client is untrusted (usually too much anonymous traffic), not that the URL is wr
   retried once with "Reply with only the JSON object", and the final error names the model and quotes
   what it said. The old dead end — "The answer was incomplete. Try a shorter question." — must not
   come back; it told the person nothing and blamed them for the model's failure.
+- **Answers come with diagrams, drawn by a second request** (`server/visualize.ts`, `POST /api/visualize`).
+  Once an answer is on screen the panel asks for visuals: per paragraph, null or one of a `diagram`
+  (boxes and labelled arrows, branches allowed), a `table` (columns are the things compared, each row is
+  an aspect then one value per column) or an `example` (labelled "Example from the video" or
+  "Illustration"). The model gets each paragraph with `passageAround` its citations, never the whole
+  video. **Do not move visuals back into the answer call**: asked for both at once, Qwen3-32B cited runs
+  of 8–19 consecutive ids to "support" each box and failed the outside-the-context check on 3 of 5
+  questions that answered cleanly without them. Here a failure costs a diagram, never the answer, and
+  the panel stays quiet about it.
+  The model returns structured nodes and edges, **never Mermaid code**: `mermaidSource` rewrites ids to
+  `n1…` and entity-escapes labels, so no label can change the graph. Mermaid (`securityLevel: 'strict'`)
+  is a lazy chunk loaded with the first diagram; the panel bundle does not grow, and the chunks contain
+  no `eval`, which the extension CSP forbids. A figure in a visual must appear in its passage
+  (`inventsFigure`): an example that invents one becomes an illustration, a diagram or table is dropped.
+  The model once drew "hello" → ID 123 as "the video's own example". Generic titles ("X process",
+  "A vs B") are removed, identical visuals are drawn once, and an answer carries two at most.
 - **Models**: picker lists Ollama `/api/tags` live plus the configured `DEEPINFRA_MODEL`. Ollama is
   called on `/api/chat` with the JSON schema as `format` and **no** auth header. Small models that
   invent ids are rejected with "Try a larger model" — that refusal is correct, not a bug.
