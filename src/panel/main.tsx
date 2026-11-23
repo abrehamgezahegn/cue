@@ -6,7 +6,8 @@ import './style.css';
 import { api, isExtension, readSaved, rememberVideo, save } from './api';
 import { demoTranscript, demoVideo } from './demo';
 import { formatTime, formatDuration, passageAround, readingTimeMinutes, segmentsAround, videoIdFromUrl, wordCount } from '../shared/transcript';
-import type { ChatMessage, Citation, Health, ProviderId, Quiz, QuizQuestion, Transcript, Video } from '../shared/types';
+import { asDiagram, mermaidSource, visualText } from '../shared/visual';
+import type { Answer, AnswerPart, AnswerVisual, ChatMessage, Citation, Health, ProviderId, Quiz, QuizQuestion, Transcript, Video } from '../shared/types';
 
 declare const __CUE_BUILT__: string;
 
@@ -15,6 +16,48 @@ function Mark({ small = false }: { small?: boolean }) {
   return <svg width={small ? 20 : 26} height={small ? 20 : 26} viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M10 5H5v18h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="m14 7 10 7-10 7V7Z" fill="currentColor"/></svg>;
 }
 const id = () => crypto.randomUUID();
+// Mermaid is ~1 MB; it loads the first time an answer has a diagram, not with the panel.
+let mermaidLoad: Promise<typeof import('mermaid').default> | null = null;
+let diagramCount = 0;
+function DiagramView({ diagram, theme }: { diagram: Extract<AnswerVisual, { kind: 'diagram' }>; theme: string }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const source = mermaidSource(diagram);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const mermaid = await (mermaidLoad ||= import('mermaid').then(module => module.default));
+      // The theme attribute is set by the panel's own effect, which runs after this one.
+      await new Promise(requestAnimationFrame);
+      const css = getComputedStyle(document.documentElement);
+      const token = (name: string) => css.getPropertyValue(name).trim();
+      mermaid.initialize({
+        startOnLoad: false, securityLevel: 'strict', theme: 'base', fontFamily: token('--font') || 'sans-serif',
+        flowchart: { useMaxWidth: true, curve: 'basis', nodeSpacing: 22, rankSpacing: 30, padding: 10, wrappingWidth: 170 },
+        themeVariables: { fontSize: '13px', primaryColor: token('--ground'), primaryBorderColor: token('--control'), primaryTextColor: token('--text'), lineColor: token('--muted'), edgeLabelBackground: token('--surface'), background: token('--surface') },
+      });
+      const result = await mermaid.render(`cue-diagram-${++diagramCount}`, source);
+      if (live) { setSvg(result.svg); setFailed(false); }
+    })().catch(() => { if (live) setFailed(true); });
+    return () => { live = false; };
+  }, [source, theme]);
+  // If drawing fails, the same arrows as text are still an answer.
+  if (failed) return <ol className="visual-diagram-text">{visualText({ ...diagram, title: '' }).split('\n').map((line, i) => <li key={i}>{line}</li>)}</ol>;
+  if (!svg) return <div className="visual-diagram-loading" aria-hidden="true"/>;
+  return <div className="visual-diagram-svg" role="img" aria-label={visualText(diagram)} dangerouslySetInnerHTML={{ __html: svg }}/>;
+}
+function Visual({ visual, theme }: { visual: AnswerVisual; theme: string }) {
+  const caption = visual.kind === 'example'
+    ? <figcaption><span className="visual-source">{visual.source === 'video' ? 'Example from the video' : 'Illustration'}</span>{visual.title && <span>{visual.title}</span>}</figcaption>
+    : visual.title ? <figcaption><span>{visual.title}</span></figcaption> : null;
+  return <figure className={`visual visual-${visual.kind === 'flow' ? 'diagram' : visual.kind}`}>
+    {caption}
+    {(visual.kind === 'flow' || visual.kind === 'diagram') && <DiagramView diagram={asDiagram(visual)} theme={theme}/>}
+    {visual.kind === 'table' && <div className="visual-table-scroll"><table><thead><tr><td/>{visual.columns.map((column, i) => <th key={i} scope="col">{column}</th>)}</tr></thead><tbody>{visual.rows.map((row, r) => <tr key={r}>{row.map((cell, c) => c === 0 ? <th key={c} scope="row">{cell}</th> : <td key={c}>{cell}</td>)}</tr>)}</tbody></table></div>}
+    {visual.kind === 'example' && <ol>{visual.lines.map((line, i) => <li key={i}>{line}</li>)}</ol>}
+  </figure>;
+}
+const answerText = (parts: AnswerPart[]) => parts.map(p => p.visual ? `${p.text}\n\n${visualText(p.visual)}` : p.text).join('\n\n');
 type Mode = 'loading' | 'ready' | 'missing' | 'no-video';
 function App() {
   const [video, setVideo] = useState<Video | null>(preview ? demoVideo : null);
@@ -51,6 +94,7 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const [drawing, setDrawing] = useState<string[]>([]);
   const [busySeconds, setBusySeconds] = useState(0);
   const [query, setQuery] = useState('');
   const [settings, setSettings] = useState(false);
@@ -70,6 +114,7 @@ function App() {
   const loadController = useRef<AbortController | null>(null);
   const answerController = useRef<AbortController | null>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
+  const transcriptCurrent = useRef<HTMLButtonElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const settingsDialog = useRef<HTMLDialogElement>(null);
   const draftBeforeAsk = useRef('');
@@ -123,6 +168,11 @@ function App() {
     const latestQuestion = [...document.querySelectorAll('.user-message')].at(-1);
     latestQuestion?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [messages.length, busy]);
+  // When the transcript tab opens, scroll to where the video is currently playing.
+  useEffect(() => {
+    if (tab !== 'transcript' || !transcriptCurrent.current) return;
+    transcriptCurrent.current.scrollIntoView({ block: 'center' });
+  }, [tab]);
 
   const loadTranscript = useCallback(async (nextVideo: Video, nextTabId: number | null) => {
     loadController.current?.abort();
@@ -254,11 +304,32 @@ function App() {
     try {
       const answer = await api.ask(question, transcript, previous, model, controller.signal);
       if (controller.signal.aborted) return;
-      const finished: ChatMessage[] = [...next, { id: id(), role: 'assistant', text: answer.parts.map(p => p.text).join('\n\n'), answer }];
+      const reply: ChatMessage = { id: id(), role: 'assistant', text: answerText(answer.parts), answer };
+      const finished: ChatMessage[] = [...next, reply];
       setMessages(finished); await save(key, finished);
+      void drawVisuals(reply.id, question, answer, key);
       setHealth(await api.health()); setConnectionError('');
     } catch (e: any) { if (!controller.signal.aborted) setError(e.message); }
     finally { if (answerController.current === controller) { setBusy(false); input.current?.focus(); } }
+  }
+  // Diagrams are drawn after the answer is on screen, by a second request. If it fails the answer
+  // simply stays as it is: a missing diagram is not an error worth interrupting anyone for.
+  async function drawVisuals(messageId: string, question: string, answer: Answer, key: string) {
+    if (answer.notFound || !transcript) return;
+    setDrawing(current => [...current, messageId]);
+    try {
+      const { visuals } = await api.visualize(question, answer, transcript, model, AbortSignal.timeout(60_000));
+      if (!visuals.some(Boolean)) return;
+      const apply = (list: ChatMessage[]) => list.map(message => {
+        if (message.id !== messageId || !message.answer) return message;
+        const parts = message.answer.parts.map((part, i) => visuals[i] ? { ...part, visual: visuals[i]! } : part);
+        return { ...message, text: answerText(parts), answer: { ...message.answer, parts } };
+      });
+      // The panel may have moved to another video meanwhile; the drawing still belongs to this one.
+      if (storageKey.current === key) setMessages(current => apply(current));
+      await save(key, apply(await readSaved<ChatMessage[]>(key, [])));
+    } catch (e) { console.warn('Cue could not draw a diagram for this answer.', e); }
+    finally { setDrawing(current => current.filter(value => value !== messageId)); }
   }
   function stop() { answerController.current?.abort(); setBusy(false); setToast('Answer stopped'); }
   // The unanswered question is the last message: after a reload, a closed panel or Stop, it is all that is left.
@@ -426,7 +497,7 @@ function App() {
     return <button className="time-link" title={citation.text} onClick={() => void seek(citation)} aria-label={`Jump to ${formatTime(citation.start)}: ${citation.text}`}><Play size={10} fill="currentColor" />{formatTime(citation.start)}</button>;
   }
   async function copy(message: ChatMessage) {
-    const text = message.answer ? message.answer.parts.map(p => `${p.text}${p.citations.map(c => ` [${formatTime(c.start)}]`).join('')}`).join('\n\n') : message.text;
+    const text = message.answer ? message.answer.parts.map(p => `${p.text}${p.citations.map(c => ` [${formatTime(c.start)}]`).join('')}${p.visual ? `\n\n${visualText(p.visual)}` : ''}`).join('\n\n') : message.text;
     try { await navigator.clipboard.writeText(text); setCopied(message.id); setTimeout(() => setCopied(''), 2000); }
     catch { setToast('Could not copy. Select the answer text to copy it.'); }
   }
@@ -483,7 +554,7 @@ function App() {
       {mode === 'loading' && <div className="loading-state" role="status"><LoaderCircle className="spin" size={18}/><h2>{loadLabel}</h2></div>}
       {mode === 'missing' && <div className="empty-state"><FileText size={26}/><h2>No transcript yet</h2><p>{error}</p><button className="secondary-button" onClick={() => video && void loadTranscript(video, tabId)}><RefreshCw size={14}/>Try again</button><p className="small-note">Some videos don't have captions available.</p></div>}
       {ready && tab === 'ask' && <>
-        {messages.length === 0 ? <div className="welcome"><div className="suggestions">{['Give me the key takeaways', 'Explain the main idea simply', 'What can I put into practice?'].map(suggestion => <button key={suggestion} onClick={() => void ask(suggestion)}><span>{suggestion}</span><ArrowUpRight size={14}/></button>)}</div></div> : <div className="messages" role="log" aria-label="Conversation">{messages.map(m => m.role === 'user' ? <div className="user-message" key={m.id}>{m.text}</div> : <article className="assistant-message" key={m.id}>{m.answer?.parts.map((p, i) => <div className="answer-part" key={i}><p>{p.text}</p>{p.citations.length > 0 && <div className="citations">{p.citations.map(c => <TimeLink key={c.segmentId} citation={c}/>)}</div>}{citedPassage(`ask:${m.id}:${i}`, p.citations)}</div>)}{m.answer?.coverage === 'selected' && <p className="coverage-note">Based on selected passages from this long video.</p>}<div className="answer-actions"><button className="icon-button" title="Copy answer" aria-label="Copy answer" onClick={() => void copy(m)}>{copied === m.id ? <Check size={14}/> : <Copy size={14}/>}</button>{copied === m.id && <span>Copied</span>}</div></article>)}</div>}
+        {messages.length === 0 ? <div className="welcome"><div className="suggestions">{['Give me the key takeaways', 'Explain the main idea simply', 'What can I put into practice?'].map(suggestion => <button key={suggestion} onClick={() => void ask(suggestion)}><span>{suggestion}</span><ArrowUpRight size={14}/></button>)}</div></div> : <div className="messages" role="log" aria-label="Conversation">{messages.map(m => m.role === 'user' ? <div className="user-message" key={m.id}>{m.text}</div> : <article className="assistant-message" key={m.id}>{m.answer?.parts.map((p, i) => <div className="answer-part" key={i}><p>{p.text}</p>{p.visual && <Visual visual={p.visual} theme={theme}/>}{p.citations.length > 0 && <div className="citations">{p.citations.map(c => <TimeLink key={c.segmentId} citation={c}/>)}</div>}{citedPassage(`ask:${m.id}:${i}`, p.citations)}</div>)}{drawing.includes(m.id) && <p className="coverage-note" role="status">Drawing a diagram…</p>}{m.answer?.coverage === 'selected' && <p className="coverage-note">Based on selected passages from this long video.</p>}<div className="answer-actions"><button className="icon-button" title="Copy answer" aria-label="Copy answer" onClick={() => void copy(m)}>{copied === m.id ? <Check size={14}/> : <Copy size={14}/>}</button>{copied === m.id && <span>Copied</span>}</div></article>)}</div>}
         {busy && <div className="thinking" role="status"><Mark small/><span>Finding the right moments</span><span className="thinking-dots">···</span>{busySeconds >= 5 && <span className="thinking-time">{busySeconds}s</span>}</div>}
         {error && !busy && <div className="inline-error" role="alert"><AlertCircle size={16}/><div><p>{error}</p><button onClick={() => void retry()}>Try again <RefreshCw size={12}/></button></div></div>}
         {!error && !busy && messages.at(-1)?.role === 'user' && <div className="inline-error unanswered" role="status"><div><p>No answer to this question yet.</p><button onClick={() => void retry()}>Ask again <RefreshCw size={12}/></button></div></div>}
@@ -491,7 +562,7 @@ function App() {
       </>}
       {ready && tab === 'transcript' && <>
         <div className="transcript-tools"><label className="search"><Search size={15}/><input aria-label="Search transcript" value={query} onChange={e => setQuery(e.target.value)} placeholder="Find in transcript…"/>{query && <button aria-label="Clear search" onClick={() => setQuery('')}><X size={14}/></button>}</label><div className="transcript-meta"><span>{query ? `${segments.length} matching passages · ${wordCount(segments)} words` : `${transcript!.segments.length} passages · ${wordCount(transcript!.segments)} words · ${formatDuration(readingTimeMinutes(wordCount(transcript!.segments)))} read`}</span><button onClick={() => video && void loadTranscript(video, tabId)} title="Refresh transcript"><RefreshCw size={12}/>Refresh</button></div></div>
-        <div className="transcript-list">{segments.map(s => <button key={s.id} className={`transcript-row ${currentSegment?.id === s.id ? 'current' : ''}`} onClick={() => void seek({ segmentId: s.id, start: s.start, text: s.text })}><time>{formatTime(s.start)}</time><span>{s.text}</span></button>)}{segments.length === 0 && <p className="no-results">No passages match "{query}".</p>}</div>
+        <div className="transcript-list">{segments.map(s => <button key={s.id} ref={currentSegment?.id === s.id ? transcriptCurrent : undefined} className={`transcript-row ${currentSegment?.id === s.id ? 'current' : ''}`} onClick={() => void seek({ segmentId: s.id, start: s.start, text: s.text })}><time>{formatTime(s.start)}</time><span>{s.text}</span></button>)}{segments.length === 0 && <p className="no-results">No passages match "{query}".</p>}</div>
       </>}
       {ready && tab === 'quiz' && <>
         {!quiz && !quizBusy && !quizError && <div className="quiz-intro">

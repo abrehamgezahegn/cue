@@ -8,6 +8,7 @@ import { answerQuestion } from './answer';
 import { createQuiz } from './quiz';
 import { gradeAnswer } from './grade';
 import { clarifyQuestion } from './clarify';
+import { visualizeAnswer } from './visualize';
 import { defaultTarget, listModels, resolveTarget } from './providers';
 
 function json(res: ServerResponse, status: number, data: unknown) {
@@ -65,6 +66,15 @@ const app = createServer(async (req, res) => {
         const onClose = () => { if (!res.writableEnded) controller.abort(); };
         res.on('close', onClose);
         try { return json(res, 200, await clarifyQuestion(input, target, controller.signal)); }
+        finally { clearTimeout(timer); res.off('close', onClose); }
+      }
+      if (url.pathname === '/api/visualize') {
+        const target = resolveTarget(input, await listModels());
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 60_000);
+        const onClose = () => { if (!res.writableEnded) controller.abort(); };
+        res.on('close', onClose);
+        try { return json(res, 200, await visualizeAnswer(input, target, controller.signal)); }
         finally { clearTimeout(timer); res.off('close', onClose); }
       }
       if (url.pathname === '/api/grade') {
