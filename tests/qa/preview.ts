@@ -67,6 +67,24 @@ await check('citation jumps and reports it', async () => {
   return toast.trim();
 });
 
+await check('answer citations open the transcript around them and its rows seek', async () => {
+  const toggle = page.locator('.assistant-message .cited-passage-toggle').first();
+  const label = (await toggle.innerText()).trim();
+  await toggle.click();
+  const rows = page.locator('.assistant-message .cited-passage-rows .transcript-row');
+  const shown = await rows.count();
+  if (!shown) fail('the passage did not open');
+  if (!(await page.locator('.assistant-message .cited-passage-rows .transcript-row.cited').count())) fail('the cited line is not marked');
+  await page.locator('.toast.visible').waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+  await rows.last().click();
+  await page.locator('.toast.visible').waitFor({ timeout: 5000 });
+  const toast = (await page.locator('.toast').innerText()).trim();
+  if (!/Preview jumped to/.test(toast)) fail(`toast said "${toast}"`);
+  await toggle.click();
+  if (await page.locator('.assistant-message .cited-passage-rows').count()) fail('the passage did not close');
+  return `${label}, ${shown} rows, ${toast}`;
+});
+
 await check('transcript search narrows to matching passages', async () => {
   await page.getByRole('button', { name: 'Transcript', exact: true }).click();
   await page.getByRole('textbox', { name: 'Search transcript' }).fill('phone');
@@ -126,14 +144,21 @@ await check('quiz runs all question types, scores itself and links to the video'
       await first.click();
       seen.add(/^[TF]\s/.test(label) ? 'boolean' : 'choice');
     }
-    await page.locator('.quiz-feedback').waitFor({ timeout: 5000 });
+    // Written answers are marked by a model; a choice answers instantly.
+    await page.locator('.quiz-feedback').waitFor({ timeout: 60000 });
     if (!(await page.locator('.quiz-feedback .time-link').count())) fail('a question with no citation');
     if (step === 0) {
+      // the passage around the citation opens inline, highlights the cited lines and its rows are seekable
+      await page.locator('.cited-passage-toggle').click();
+      if (!(await page.locator('.cited-passage-rows .transcript-row').count())) fail('the cited passage did not open');
+      if (!(await page.locator('.cited-passage-rows .transcript-row.cited').count())) fail('the cited line is not marked in the passage');
+      await page.locator('.cited-passage-toggle').click();
+      if (await page.locator('.cited-passage-rows').count()) fail('the passage did not close');
       // back and forth: the answered question must still be there when you return
       const prompt = await page.locator('.quiz-prompt').innerText();
       await page.getByRole('button', { name: 'Next', exact: true }).click();
       if ((await page.locator('.quiz-prompt').innerText()) === prompt) fail('next did not move on');
-      await page.getByRole('button', { name: 'Back' }).click();
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
       if ((await page.locator('.quiz-prompt').innerText()) !== prompt) fail('back did not return to the same question');
       if (!(await page.locator('.quiz-verdict').count())) fail('the verdict was lost when going back');
     }
@@ -159,6 +184,9 @@ await check('dark theme survives a reload', async () => {
   await page.getByLabel('Appearance').selectOption('dark');
   await page.getByRole('button', { name: 'Close settings' }).click();
   await page.reload();
+  // The panel reopens on the tab it was left on — the quiz, here.
+  await page.locator('.tabs .selected', { hasText: 'Quiz' }).waitFor({ timeout: 60000 });
+  await page.getByRole('button', { name: 'Ask', exact: true }).click();
   await page.locator('.composer textarea:not([disabled])').waitFor({ timeout: 60000 });
   const theme = await page.locator('html').getAttribute('data-theme');
   if (theme !== 'dark') fail(`theme after reload: ${theme}`);
@@ -171,6 +199,17 @@ await check('conversation survives a reload', async () => {
   const messages = await page.locator('.assistant-message').count();
   if (messages < 2) fail(`only ${messages} answers after reload`);
   return `${messages} answers restored`;
+});
+
+await check('a half-written question survives a reload', async () => {
+  const text = 'half-written question about the second point';
+  await page.locator('#question').fill(text);
+  await page.reload();
+  await page.locator('.composer textarea:not([disabled])').waitFor({ timeout: 60000 });
+  const restored = await page.locator('#question').inputValue();
+  if (restored !== text) fail(`composer after reload: "${restored}"`);
+  await page.locator('#question').fill('');
+  return 'draft restored';
 });
 
 await check('no horizontal overflow at 320, 390 and 768', async () => {
