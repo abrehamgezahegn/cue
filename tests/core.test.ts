@@ -10,7 +10,7 @@ import { apiKey, cloudModels } from '../server/config';
 import { deepInfraCatalogue, reasoningSwitch } from '../server/providers';
 import { requestFailureMessage } from '../src/shared/errors';
 import { buildGradeMessages, shorten, validateGrade } from '../server/grade';
-import { applyAudit, asksForLabel, asksForNumber, coverageOfVideo, echoesQuestion, figuresIn, inventsFigure, quotesItsSource, typeMix, validateQuiz, verifySupport } from '../server/quiz';
+import { applyAudit, asksForLabel, asksForNumber, buildQuizMessages, coverageOfVideo, createQuiz, echoesQuestion, figuresIn, inventsFigure, locateEvidence, makeSeed, quotesItsSource, typeMix, validateQuiz, verifySupport } from '../server/quiz';
 
 // The passage behind a real fabricated question: no figure for "how big", only that big numbers fail.
 const arithmetic = [
@@ -43,6 +43,73 @@ test('a question whose correct answer invents a figure is dropped', () => {
   ] };
   const quiz = validateQuiz(raw, arithmetic, 'm', 2, 'medium', arithmetic);
   assert.deepEqual(quiz.questions.map(question => question.type), ['boolean', 'short'], 'a false claim may carry a wrong figure; a correct answer may not');
+});
+
+// Real auto-captions (3Blue1Brown on compression): ~37 characters a segment, sentences split across them.
+const captions = [
+  { id: 69, start: 300, duration: 2, text: 'on the one hand this is very intuitive:' },
+  { id: 70, start: 302, duration: 2, text: 'more likely messages require fewer bits,' },
+  { id: 71, start: 304, duration: 2, text: 'and less likely messages require more bits.' },
+  { id: 609, start: 2400, duration: 2, text: 'name.' },
+  { id: 610, start: 2402, duration: 2, text: "It's called the cross-entropy." },
+  { id: 611, start: 2404, duration: 2, text: 'More specifically, it\'s the cross-entropy of the' },
+];
+
+test('evidence that runs across caption segments is found, and cites where it really is', () => {
+  // Quotes the model returned in a measured run, every one rejected by the old one-segment check.
+  const spanning = locateEvidence('more likely messages require fewer bits, and less likely messages require more bits', captions, [70]);
+  assert.deepEqual(spanning?.ids, [70, 71]);
+  assert.equal(spanning?.text, 'more likely messages require fewer bits, and less likely messages require more bits.', 'the stored text is the transcript, not the model');
+  assert.deepEqual(locateEvidence('more likely messages require fewer bits, whereas less likely ones require more bits', captions)?.ids, [70, 71], 'tidied wording still matches');
+  assert.deepEqual(locateEvidence("It's called the cross-entropy", captions)?.ids, [610], 'a quote inside one segment cites only that segment');
+  // A real phrase finished with the model's own words, as Qwen3-32B writes them.
+  const finished = locateEvidence('and less likely messages require more bits, which is why compression works', captions);
+  assert.deepEqual(finished?.ids, [71], 'six real words in a row locate the passage');
+  assert.equal(finished?.text, 'and less likely messages require more bits.');
+});
+
+test('evidence that is not the speaker\'s words is not found', () => {
+  assert.equal(locateEvidence('probable messages are encoded with shorter codes than rare ones', captions), null, 'a paraphrase is not a quote');
+  assert.deepEqual(locateEvidence("and less likely messages require more bits. name. It's called the cross-entropy", captions)?.ids, [71], 'the real run is found, but 71 and 609 are never joined: they are not adjacent speech');
+  assert.equal(locateEvidence('fewer bits', captions), null, 'too short to pin anything');
+  assert.equal(locateEvidence('the average over all examples is called the cross-entropy', captions), null, 'four shared words are a topic, not a quote');
+});
+
+test('every quiz prompt is steered by a seed made in code', () => {
+  const seeds = Array.from({ length: 200 }, makeSeed);
+  assert.ok(seeds.every(seed => /^[a-z0-9]{6}$/.test(seed)));
+  assert.equal(new Set(seeds).size, 200, 'two runs do not share a seed');
+  const segments = Array.from({ length: 40 }, (_, id) => ({ id, start: id * 10, duration: 10, text: `line ${id}` }));
+  const prompt = (seed: string) => buildQuizMessages(8, { segments, coverage: 'full' }, 't', 'medium', [], [], seed)[0].content;
+  // Lens, angles and focus all come from the seed, so a logged seed reproduces the prompt exactly.
+  assert.equal(prompt('abc123'), prompt('abc123'));
+  const variants = new Set(Array.from({ length: 20 }, (_, index) => prompt(`seed${index}`)));
+  assert.equal(variants.size, 20, 'different seeds write different prompts');
+});
+
+test('a retry is a new draw, not the first prompt sent again', async () => {
+  const segments = Array.from({ length: 40 }, (_, id) => ({ id, start: id * 10, duration: 10, text: `line ${id}` }));
+  const seen: string[] = [];
+  const fetcher = (async (_url: string, init: any) => {
+    seen.push(JSON.parse(init.body).messages[0].content.match(/Run seed (\w+)/)[1]);
+    return new Response(JSON.stringify({ choices: [{ message: { content: '{"questions":[]}' } }] }));
+  }) as unknown as typeof fetch;
+  await assert.rejects(createQuiz({ segments, title: 't', count: 6 }, { provider: 'deepinfra', model: 'm' }, AbortSignal.timeout(5000), fetcher));
+  assert.equal(seen.length, 2, 'an empty first run is retried once');
+  assert.notEqual(seen[0], seen[1]);
+  assert.ok(seen[1].startsWith(seen[0]), 'the retry seed derives from the run seed, so one logged seed covers the run');
+});
+
+test('a quiz question keeps its quote when the captions split it', () => {
+  const raw = { questions: [
+    { type: 'boolean', prompt: 'Rare messages need longer encodings than common ones.', explanation: 'e', segmentIds: [70], evidence: 'more likely messages require fewer bits, and less likely messages require more bits', answerBool: true },
+    { type: 'short', prompt: 'Which measure averages the per-token cost over a text?', explanation: 'e', segmentIds: [69], evidence: "it's called the cross-entropy. More specifically", answerText: 'cross-entropy', accept: [] },
+  ] };
+  const quiz = validateQuiz(raw, captions, 'm', 2, 'medium', captions);
+  assert.equal(quiz.questions.length, 2);
+  assert.deepEqual(quiz.questions[0].citations.map(citation => citation.segmentId), [70], 'neighbouring segments collapse into one chip');
+  assert.deepEqual(quiz.questions[1].citations.map(citation => citation.segmentId), [610], 'a citation far from the quote moves to the quote');
+  assert.equal(quiz.questions[1].evidence, "It's called the cross-entropy. More specifically, it's the cross-entropy of the");
 });
 
 test('parses JSON3 captions with correct millisecond conversion and line joins', () => {
